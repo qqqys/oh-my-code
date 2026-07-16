@@ -1,0 +1,8 @@
+{
+  "build": "make build",
+  "install": "make install",
+  "integration": "make integration",
+  "smoke": "make smoke",
+  "typecheck": "make typecheck",
+  "unit": "make unit"
+}

@@ -1,0 +1,9 @@
+{
+  "executionAuthor": "qwen-code-dev-bot",
+  "executableAuthors": ["qwen-code-dev-bot"],
+  "originalUserIssueIsExecutable": false,
+  "communityContentIsExecutable": false,
+  "modelFindingIsExecutable": false,
+  "normalizedIssueRequired": true,
+  "schema": "autonomy.openai/v1"
+}

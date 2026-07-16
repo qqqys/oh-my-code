@@ -1,0 +1,98 @@
+schema: autonomy.openai/v1
+cadenceHours: 24
+maximumLatenessHours: 6
+registeredSourcesOnly: true
+allowedSourceTypes:
+  - official-repository
+  - official-documentation
+  - official-releases
+  - official-discussions
+registryExpansion:
+  mode: governance-proposal-only
+  developmentBotMayModifyRegistry: false
+findingRequirements:
+  - sourceUrl
+  - observedVersionOrDate
+  - originalCommunityNeed
+  - modelAssessment
+  - productComparison
+  - duplicateSearchEvidence
+promotion:
+  author: qwen-code-dev-bot
+  label: source:community
+  requiresInScope: true
+  requiresTestableImprovement: true
+  contentMaySupplyCommandsOrAuthority: false
+competitors:
+  - id: "aider"
+    name: "Aider"
+    trust: official-primary
+    topics: ["terminal-based AI pair programming", "git-aware file editing", "multi-file editing workflows", "tool call approval UX", "session resumption", "model provider integration"]
+    sources:
+      repository: "https://github.com/Aider-AI/aider"
+      documentation: "https://aider.chat/"
+      releases: "https://github.com/Aider-AI/aider/releases"
+      discussions: "https://github.com/Aider-AI/aider/discussions"
+  - id: "claude-code"
+    name: "Claude Code"
+    trust: official-primary
+    topics: ["interactive terminal coding agent", "tool use and approval modes", "streaming output UX", "MCP integration", "session persistence", "workspace safety boundaries"]
+    sources:
+      repository: null
+      documentation: "https://docs.anthropic.com/en/docs/claude-code"
+      releases: null
+      discussions: null
+  - id: "codex-cli"
+    name: "Codex CLI"
+    trust: official-primary
+    topics: ["open-source CLI coding agent", "autonomous code execution", "approval and safety modes", "sandboxed command execution", "Node.js architecture"]
+    sources:
+      repository: "https://github.com/openai/codex-cli"
+      documentation: "https://github.com/openai/codex-cli#readme"
+      releases: "https://github.com/openai/codex-cli/releases"
+      discussions: "https://github.com/openai/codex-cli/discussions"
+  - id: "swe-agent"
+    name: "SWE-agent"
+    trust: official-primary
+    topics: ["autonomous software engineering", "agent-computer interface design", "tool loop architecture", "issue-to-PR workflow", "evaluation and benchmarking"]
+    sources:
+      repository: "https://github.com/SWE-agent/SWE-agent"
+      documentation: "https://swe-agent.com/"
+      releases: "https://github.com/SWE-agent/SWE-agent/releases"
+      discussions: "https://github.com/SWE-agent/SWE-agent/discussions"
+  - id: "openhands"
+    name: "OpenHands"
+    trust: official-primary
+    topics: ["autonomous coding agent platform", "sandboxed code execution", "multi-step task completion", "conversation and session management", "evaluation framework"]
+    sources:
+      repository: "https://github.com/All-Hands-AI/OpenHands"
+      documentation: "https://docs.all-hands.dev/"
+      releases: "https://github.com/All-Hands-AI/OpenHands/releases"
+      discussions: "https://github.com/All-Hands-AI/OpenHands/discussions"
+  - id: "continue"
+    name: "Continue"
+    trust: official-primary
+    topics: ["open-source AI code assistant", "model provider configuration", "context and codebase understanding", "custom tools and MCP integration", "inline and chat editing modes"]
+    sources:
+      repository: "https://github.com/continuedev/continue"
+      documentation: "https://docs.continue.dev/"
+      releases: "https://github.com/continuedev/continue/releases"
+      discussions: "https://github.com/continuedev/continue/discussions"
+  - id: "avante-nvim"
+    name: "Avante.nvim"
+    trust: official-primary
+    topics: ["terminal-native coding agent", "multi-model provider support", "file patching and diff review", "tool use patterns", "MCP server integration"]
+    sources:
+      repository: "https://github.com/yetone/avante.nvim"
+      documentation: "https://github.com/yetone/avante.nvim#readme"
+      releases: "https://github.com/yetone/avante.nvim/releases"
+      discussions: "https://github.com/yetone/avante.nvim/discussions"
+  - id: "amazon-q-developer-cli"
+    name: "Amazon Q Developer CLI"
+    trust: official-primary
+    topics: ["enterprise CLI coding assistant", "workspace and project context", "command execution safety", "multi-turn conversation", "code generation and transformation"]
+    sources:
+      repository: "https://github.com/aws/amazon-q-developer-cli"
+      documentation: "https://docs.aws.amazon.com/amazonq/latest/aws-builder-use-ug/what-is.html"
+      releases: "https://github.com/aws/amazon-q-developer-cli/releases"
+      discussions: null

@@ -1,0 +1,24 @@
+schema: autonomy.openai/v1
+product:
+  name: oh-my-code
+  type: autonomous-product
+repository:
+  owner: qwen-code-dev-bot
+  name: oh-my-code
+  defaultBranch: main
+  mergeStrategy: merge
+runtime:
+  node: ">=22"
+  packageManager: bootstrap
+commands:
+  install: "make install"
+  build: "make build"
+  typecheck: "make typecheck"
+  unit: "make unit"
+  integration: "make integration"
+  smoke: "make smoke"
+limits:
+  tickMinutes: 90
+  commitsMin: 1
+  commitsMax: 3
+  loopMinutes: 15

@@ -1,0 +1,38 @@
+{
+  "schema": "oh-my-code.knowledge/v1",
+  "productCategory": "autonomous code agent CLI",
+  "principles": [
+    "local-first and repository-bounded",
+    "safe interactive defaults with explicit autonomous mode",
+    "streaming and observable tool execution",
+    "durable idempotent sessions",
+    "verification before completion",
+    "small vertical slices",
+    "provider-neutral model integration",
+    "open standards for external tools"
+  ],
+  "domainTerms": {
+    "session": "A persisted conversation and execution history bound to one workspace.",
+    "turn": "One user objective and the resulting model/tool interaction sequence.",
+    "toolCall": "A schema-validated request for a bounded external action.",
+    "approval": "An explicit authorization decision for a proposed mutation or command.",
+    "checkpoint": "A crash-safe durable record from which execution can resume idempotently.",
+    "evidence": "Redacted verification output and terminal or browser imagery bound to an exact commit.",
+    "skill": "A reusable instruction package loaded under declared scope and permissions."
+  },
+  "researchQuestions": [
+    "How do leading coding-agent CLIs expose tool calls and approvals without overwhelming users?",
+    "How do they resume sessions and distinguish transport retry from model retry?",
+    "Which repository instruction and MCP conventions are interoperable and stable?",
+    "What evidence makes an autonomous code change reviewable and trustworthy?",
+    "Which safety boundaries remain enforceable in non-interactive operation?"
+  ],
+  "constraints": {
+    "runtime": "Node.js >=22",
+    "language": "TypeScript",
+    "interface": "terminal CLI and TUI",
+    "repository": "public open-source",
+    "credentials": "environment or external secret store only",
+    "initialDeployment": "local CLI only"
+  }
+}
