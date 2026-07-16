@@ -1,6 +1,9 @@
 export interface TranscriptMessage {
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'tool';
   text: string;
+  toolName?: string;
+  toolArgs?: string;
+  truncated?: boolean;
 }
 
 export class ComposerState {

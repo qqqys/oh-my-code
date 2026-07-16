@@ -3,6 +3,7 @@ import process from 'node:process';
 import { ComposerState, type TranscriptMessage } from './composer.js';
 import { loadConfig, redact, type ModelConfig } from './config.js';
 import { createProvider, type ChatMessage, type Provider, type Usage } from './provider.js';
+import { executeTool, type ToolResult } from './tools.js';
 
 const ESC = '\x1b[';
 
@@ -27,6 +28,7 @@ const fg = {
   gray: (s: string) => `${ESC}90m${s}${ESC}0m`,
   white: (s: string) => `${ESC}37m${s}${ESC}0m`,
   red: (s: string) => `${ESC}31m${s}${ESC}0m`,
+  magenta: (s: string) => `${ESC}35m${s}${ESC}0m`,
   reverse: (s: string) => `${ESC}7m${s}${ESC}0m`,
 } as const;
 
@@ -83,10 +85,16 @@ function boxLine(left: string, content: string, right: string, innerWidth: numbe
 }
 
 function wrapText(text: string, maxWidth: number): string[] {
-  const points = Array.from(text);
   const lines: string[] = [];
-  for (let i = 0; i < points.length; i += maxWidth) {
-    lines.push(points.slice(i, i + maxWidth).join(''));
+  for (const segment of text.split('\n')) {
+    const points = Array.from(segment);
+    if (points.length === 0) {
+      lines.push('');
+      continue;
+    }
+    for (let i = 0; i < points.length; i += maxWidth) {
+      lines.push(points.slice(i, i + maxWidth).join(''));
+    }
   }
   return lines.length > 0 ? lines : [''];
 }
@@ -150,72 +158,103 @@ export function renderScreen(
     canRegenerate: false,
   },
 ): string {
-  const lines: string[] = [];
+  const header: string[] = [];
 
   // Logo block
   for (const line of LOGO) {
-    lines.push(center(fg.cyan(fg.bold(line)), width));
+    header.push(center(fg.cyan(fg.bold(line)), width));
   }
-  lines.push(center(fg.dim(`v${version}`), width));
-  lines.push('');
+  header.push(center(fg.dim(`v${version}`), width));
+  header.push('');
 
   // Status card
   const cardInner = width > 10 ? width - 10 : 1;
-  lines.push(`  ${fg.blue('┌' + '─'.repeat(cardInner + 2) + '┐')}`);
-  lines.push(fg.blue(boxLine('│', fg.bold('  Status'), '│', cardInner)));
-  lines.push(fg.blue(boxLine('│', '', '│', cardInner)));
-  lines.push(fg.blue(boxLine('│', `  Model:      ${status.model}`, '│', cardInner)));
-  lines.push(fg.blue(boxLine('│', `  Connection: ${connectionLabel(status.connection)}`, '│', cardInner)));
-  lines.push(fg.blue(boxLine('│', `  Repository: ${fg.dim('none')}`, '│', cardInner)));
-  lines.push(`  ${fg.blue('└' + '─'.repeat(cardInner + 2) + '┘')}`);
-  lines.push('');
+  header.push(`  ${fg.blue('┌' + '─'.repeat(cardInner + 2) + '┐')}`);
+  header.push(fg.blue(boxLine('│', fg.bold('  Status'), '│', cardInner)));
+  header.push(fg.blue(boxLine('│', '', '│', cardInner)));
+  header.push(fg.blue(boxLine('│', `  Model:      ${status.model}`, '│', cardInner)));
+  header.push(fg.blue(boxLine('│', `  Connection: ${connectionLabel(status.connection)}`, '│', cardInner)));
+  header.push(fg.blue(boxLine('│', `  Repository: ${fg.dim('none')}`, '│', cardInner)));
+  header.push(`  ${fg.blue('└' + '─'.repeat(cardInner + 2) + '┘')}`);
+  header.push('');
 
-  // Transcript area
-  lines.push(`  ${fg.gray('─ Transcript ' + '─'.repeat(Math.max(0, width - 16)))}`);
-  lines.push('');
+  // Transcript header
+  header.push(`  ${fg.gray('─ Transcript ' + '─'.repeat(Math.max(0, width - 16)))}`);
+  header.push('');
+
+  // Transcript body (scrolls when it overflows the available space)
+  const body: string[] = [];
   const transcriptWidth = width - 6;
   if (messages.length === 0 && status.streamingText.length === 0 && status.error === null) {
-    lines.push(center(fg.dim('No messages yet.'), width));
-    lines.push('');
+    body.push(center(fg.dim('No messages yet.'), width));
+    body.push('');
   } else {
     for (const message of messages) {
-      const label = message.role === 'user' ? fg.cyan(fg.bold('You')) : fg.green(fg.bold('Assistant'));
-      lines.push(`  ${label}`);
-      for (const wrapped of wrapText(message.text, transcriptWidth)) {
-        lines.push(`  ${wrapped}`);
+      if (message.role === 'tool') {
+        const args = message.toolArgs ? `(${message.toolArgs})` : '';
+        const suffix = message.truncated ? ` ${fg.yellow('[truncated]')}` : '';
+        body.push(`  ${fg.magenta(fg.bold('Tool'))} ${fg.magenta((message.toolName ?? 'tool') + args)}${suffix}`);
+        for (const wrapped of wrapText(message.text, transcriptWidth)) {
+          body.push(`  ${fg.dim(wrapped)}`);
+        }
+        body.push('');
+        continue;
       }
-      lines.push('');
+      const label = message.role === 'user' ? fg.cyan(fg.bold('You')) : fg.green(fg.bold('Assistant'));
+      body.push(`  ${label}`);
+      for (const wrapped of wrapText(message.text, transcriptWidth)) {
+        body.push(`  ${wrapped}`);
+      }
+      body.push('');
     }
     if (status.streamingText.length > 0) {
-      lines.push(`  ${fg.green(fg.bold('Assistant'))} ${fg.dim('(streaming…)')}`);
+      body.push(`  ${fg.green(fg.bold('Assistant'))} ${fg.dim('(streaming…)')}`);
       for (const wrapped of wrapText(status.streamingText, transcriptWidth)) {
-        lines.push(`  ${wrapped}`);
+        body.push(`  ${wrapped}`);
       }
-      lines.push('');
+      body.push('');
     }
     if (status.error !== null) {
-      lines.push(`  ${fg.red(fg.bold('Error'))}`);
+      body.push(`  ${fg.red(fg.bold('Error'))}`);
       for (const wrapped of wrapText(status.error, transcriptWidth)) {
-        lines.push(`  ${fg.red(wrapped)}`);
+        body.push(`  ${fg.red(wrapped)}`);
       }
-      lines.push('');
+      body.push('');
     }
   }
-  lines.push('');
 
-  // Composer
-  lines.push(`  ${fg.gray('─ Composer ' + '─'.repeat(Math.max(0, width - 14)))}`);
-  lines.push('');
-  lines.push(renderComposerLine(composerInput, composerCursor, '❯'));
-  lines.push('');
+  // Composer + footer are pinned to the bottom; the transcript scrolls above.
+  const composer: string[] = [
+    '',
+    `  ${fg.gray('─ Composer ' + '─'.repeat(Math.max(0, width - 14)))}`,
+    '',
+    renderComposerLine(composerInput, composerCursor, '❯'),
+    '',
+  ];
+  const footer: string[] = [
+    center(usageLabel(status.usage), width),
+    center(fg.dim(actionHints(status)), width),
+  ];
 
-  // Footer — fill remaining lines
-  while (lines.length < height - 2) {
+  const available = height - header.length - composer.length - footer.length;
+  const lines: string[] = [...header];
+  if (available <= 0) {
+    return lines
+      .slice(0, height)
+      .map((line) => pad(line, width))
+      .join('\r\n');
+  }
+  if (body.length > available) {
+    lines.push(center(fg.dim('...'), width));
+    lines.push(...body.slice(body.length - (available - 1)));
+  } else {
+    lines.push(...body);
+  }
+  lines.push(...composer);
+  while (lines.length < height - footer.length) {
     lines.push('');
   }
-
-  lines.push(center(usageLabel(status.usage), width));
-  lines.push(center(fg.dim(actionHints(status)), width));
+  lines.push(...footer);
 
   // Pad every line to full width so a redraw fully overwrites the prior frame
   // and no stale characters bleed through.
@@ -228,6 +267,7 @@ export function renderScreen(
 export interface TuiOptions {
   version: string;
   config?: ModelConfig;
+  workspace?: string;
 }
 
 const KEY = {
@@ -286,6 +326,7 @@ export async function launchTui(options: TuiOptions): Promise<void> {
   const { version } = options;
   const config = options.config ?? loadConfig();
   const provider: Provider = createProvider(config);
+  const workspace = options.workspace ?? process.cwd();
   const stdin = process.stdin;
   const stdout = process.stdout;
   const composer = new ComposerState();
@@ -379,37 +420,59 @@ export async function launchTui(options: TuiOptions): Promise<void> {
     render();
 
     abortController = new AbortController();
-    const chatMessages: ChatMessage[] = composer.messages.map((m) => ({
-      role: m.role,
-      text: m.text,
-    }));
+    const chatMessages: ChatMessage[] = [];
+    for (const m of composer.messages) {
+      if (m.role === 'user' || m.role === 'assistant') {
+        chatMessages.push({ role: m.role, text: m.text });
+      }
+    }
 
     try {
-      for await (const event of provider.stream(chatMessages, abortController.signal)) {
+      const gen = provider.stream(chatMessages, abortController.signal);
+      let toolInput: ToolResult | undefined;
+      while (true) {
+        const { value, done } = await gen.next(toolInput);
+        if (done) break;
         if (!running) break;
-        switch (event.type) {
+        toolInput = undefined;
+        switch (value.type) {
           case 'delta':
             connection = 'streaming';
-            streamingText += event.text;
+            streamingText += value.text;
             render();
             break;
+          case 'tool_call': {
+            connection = 'streaming';
+            const result = executeTool(value.call, workspace);
+            const argParts = Object.entries(value.call.args).map(([k, v]) => `${k}: ${v}`);
+            composer.messages.push({
+              role: 'tool',
+              text: result.error ?? result.output,
+              toolName: value.call.name,
+              toolArgs: argParts.join(', '),
+              truncated: result.truncated,
+            });
+            toolInput = result;
+            render();
+            break;
+          }
           case 'done':
             connection = 'done';
             composer.messages.push({ role: 'assistant', text: streamingText });
-            applyUsage(event.usage);
+            applyUsage(value.usage);
             usage.turns += 1;
             streamingText = '';
             render();
             break;
           case 'error':
-            if (event.error === 'cancelled') {
+            if (value.error === 'cancelled') {
               connection = 'done';
               streamingText = '';
               usage.turns += 1;
             } else {
               connection = 'error';
-              errorMessage = event.error;
-              lastErrorRecoverable = event.recoverable;
+              errorMessage = value.error;
+              lastErrorRecoverable = value.recoverable;
             }
             render();
             break;
@@ -437,8 +500,11 @@ export async function launchTui(options: TuiOptions): Promise<void> {
 
   function regenerate(): void {
     if (!canRegenerate()) return;
-    // Remove the last assistant message, then re-stream the prior user turn.
-    if (lastMessage()?.role === 'assistant') {
+    // Remove the assistant reply and any tool messages from the last turn,
+    // back to (but not including) the last user message, then re-stream.
+    while (composer.messages.length > 0) {
+      const last = composer.messages[composer.messages.length - 1];
+      if (last === undefined || last.role === 'user') break;
       composer.messages.pop();
     }
     void streamResponse();

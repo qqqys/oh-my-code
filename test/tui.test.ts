@@ -79,6 +79,24 @@ describe('TUI screen rendering', () => {
     expect(screen).toContain('Assistant reply');
   });
 
+  it('shows tool calls with name and arguments', () => {
+    const messages = [
+      { role: 'tool' as const, text: 'app.ts\ncli.ts', toolName: 'list_files', toolArgs: 'path: src', truncated: false },
+    ];
+    const screen = stripAnsi(renderScreen(80, 30, '0.0.0', messages));
+    expect(screen).toContain('list_files');
+    expect(screen).toContain('path: src');
+    expect(screen).toContain('app.ts');
+  });
+
+  it('shows a truncation indicator for truncated tool output', () => {
+    const messages = [
+      { role: 'tool' as const, text: 'line 1\nline 2', toolName: 'read_file', toolArgs: 'path: big.txt', truncated: true },
+    ];
+    const screen = stripAnsi(renderScreen(80, 30, '0.0.0', messages));
+    expect(screen).toContain('truncated');
+  });
+
   it('preserves multi-turn transcript order', () => {
     const messages = [
       { role: 'user' as const, text: 'First question' },
@@ -153,6 +171,23 @@ describe('TUI screen rendering', () => {
     const screen = renderScreen(120, 40, '1.2.3');
     const lines = screen.split('\r\n');
     expect(lines.length).toBe(40);
+  });
+
+  it('keeps the footer visible when the transcript overflows', () => {
+    const messages = Array.from({ length: 40 }, (_, i) => ({
+      role: 'user' as const,
+      text: `Message number ${i} with some extra text to fill the line`,
+    }));
+    const status: StatusInfo = { ...defaultStatus, usage: { turns: 5, promptTokens: 10, completionTokens: 12 } };
+    const screen = stripAnsi(renderScreen(80, 30, '0.0.0', messages, '', 0, status));
+    const lines = screen.split('\r\n');
+    expect(lines.length).toBe(30);
+    // Footer (usage + hints) must remain on-screen even with a long transcript
+    expect(screen).toContain('turns: 5');
+    expect(screen).toContain('Enter');
+    // The earliest messages scroll off
+    expect(screen).not.toContain('Message number 0 ');
+    expect(screen).toContain('Message number 39');
   });
 
   it('includes all five LOGO lines', () => {

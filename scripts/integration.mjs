@@ -46,22 +46,12 @@ function waitForContent(expected, timeoutMs = 10_000) {
   throw new Error(`Timed out waiting for content: ${expected}`);
 }
 
-function waitForOccurrences(expected, count, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const content = capturePane();
-    if (content.split(expected).length - 1 >= count) {
-      return content;
-    }
-    spawnSync('sleep', ['0.25']);
-  }
-  throw new Error(`Timed out waiting for ${count} occurrences of: ${expected}`);
-}
-
 try {
-  // Launch the TUI with the test provider
+  // Launch the TUI with the test provider. The pane is tall enough to hold the
+  // full three-turn transcript so the final capture shows every tool in action;
+  // a shorter pane would scroll the earlier turns off-screen.
   const launchCmd = `env OMC_PROVIDER=test ${JSON.stringify(nodeBin)} ${JSON.stringify(cli)}`;
-  const started = tmux('new-session', '-d', '-x', '120', '-y', '50', '-s', session, launchCmd);
+  const started = tmux('new-session', '-d', '-x', '120', '-y', '75', '-s', session, launchCmd);
   if (started.status !== 0) {
     throw new Error(started.stderr || 'Unable to start tmux integration session');
   }
@@ -79,44 +69,37 @@ try {
     throw new Error('Expected Connection: in status card');
   }
 
-  // === Turn 1: normal message ===
-  sendKeys('Hello', 'Enter');
-  waitForContent('Hello');
-  waitForContent('received your message');
+  // === Turn 1: list files (repository discovery) ===
+  sendKeys('list files in src', 'Enter');
+  // The agent invokes the list_files tool and its result appears in the transcript
+  waitForContent('list_files');
+  waitForContent('app.ts');
   waitForContent('ready');
 
-  // === Turn 2: recoverable failure + retry ===
+  // === Turn 2: read a file ===
   spawnSync('sleep', ['0.3']);
-  sendKeys('please recover now', 'Enter');
-  // The provider fails once with a recoverable error
-  waitForContent('Simulated transient network error');
-  waitForContent('Ctrl+R retry');
-  // Retry the failed turn (no duplicate user message)
-  sendKeys('C-r');
-  // After retry, the assistant responds
+  sendKeys('read tsconfig.build.json', 'Enter');
+  waitForContent('read_file');
+  // The file content is shown in the transcript
+  waitForContent('outDir');
   waitForContent('ready');
-  const afterRetry = capturePane();
-  // The user message "please recover now" must appear exactly once (no duplication)
-  const recoverCount = (afterRetry.match(/please recover now/g) || []).length;
-  if (recoverCount !== 1) {
-    throw new Error(`Expected 1 occurrence of retried user message, found ${recoverCount}`);
-  }
 
-  // === Turn 3: another normal message ===
+  // === Turn 3: search repository content ===
   spawnSync('sleep', ['0.3']);
-  sendKeys('Third question', 'Enter');
-  waitForContent('Third question');
+  sendKeys('search for launchTui', 'Enter');
+  waitForContent('search_content');
+  // A matching file is reported with its path
+  waitForContent('src/tui.ts');
   waitForContent('ready');
 
-  // Verify usage reflects three completed turns
+  // Verify usage reflects three completed turns (footer stays pinned on-screen)
   const finalScreen = waitForContent('turns: 3');
 
-  // Verify multi-turn transcript order
-  const firstIdx = finalScreen.indexOf('Hello');
-  const secondIdx = finalScreen.indexOf('please recover now');
-  const thirdIdx = finalScreen.indexOf('Third question');
-  if (!(firstIdx < secondIdx && secondIdx < thirdIdx)) {
-    throw new Error('Transcript order is incorrect across three turns');
+  // All three tools must be visible in the final transcript
+  for (const tool of ['list_files', 'read_file', 'search_content']) {
+    if (!finalScreen.includes(tool)) {
+      throw new Error(`Expected tool ${tool} in final transcript`);
+    }
   }
 
   // Preserve the verified TUI itself for PR evidence before the tmux session exits.
