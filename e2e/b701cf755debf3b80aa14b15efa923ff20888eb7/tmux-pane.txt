@@ -1,0 +1,50 @@
+                                  ___  _   _     __  __            ____          _
+                                 / _ \| | | |   |  \/  | ___   _  / ___|___   __| | ___
+                                | | | | |_| |   | |\/| |/ _ \ | | |   / _ \ / _` |/ _ \
+                                | |_| |  _  |   | |  | | (_) || | |__| (_) | (_| |  __/
+                                \___/|_| |_|   |_|  |_|\___/ |_|  \____\___/ \__,_|\___|
+                                                         v0.0.0
+
+  ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │   Status                                                                                                       │
+  │                                                                                                                │
+  │   Model:      test:test-model (no key)                                                                         │
+  │   Connection: ready                                                                                            │
+  │   Repository: none                                                                                             │
+  └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  ─ Transcript ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  You
+  Hello
+
+  Assistant
+  I received your message. Here is a deterministic streamed response for testing.
+
+  You
+  please recover now
+
+  Assistant
+  I received your message. Here is a deterministic streamed response for testing.
+
+  You
+  Third question
+
+  Assistant
+  I received your message. Here is a deterministic streamed response for testing.
+
+
+  ─ Composer ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  ❯
+
+
+
+
+
+
+
+
+
+                                                turns: 3  ·  tokens: 122
+                       Enter send  ·  ↑↓ history  ·  Ctrl+G regen  ·  Esc cancel  ·  Ctrl+C exit
