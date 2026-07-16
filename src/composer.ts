@@ -1,5 +1,5 @@
 export interface TranscriptMessage {
-  role: 'user';
+  role: 'user' | 'assistant';
   text: string;
 }
 
