@@ -104,7 +104,8 @@ try {
   sendKeys('Second message', 'Enter');
   waitForContent('Second message');
   // The assistant should respond again
-  const afterSecond = waitForOccurrences('received your message', 2);
+  waitForOccurrences('received your message', 2);
+  const afterSecond = waitForContent('Connection: ready');
   // Should have two user messages now
   const youCount = (afterSecond.match(/You/g) || []).length;
   if (youCount < 2) {
