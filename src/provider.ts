@@ -6,10 +6,15 @@ export interface ChatMessage {
   text: string;
 }
 
+export interface Usage {
+  promptTokens: number;
+  completionTokens: number;
+}
+
 export type StreamEvent =
   | { type: 'delta'; text: string }
-  | { type: 'done' }
-  | { type: 'error'; error: string };
+  | { type: 'done'; usage: Usage }
+  | { type: 'error'; error: string; recoverable: boolean };
 
 export interface Provider {
   readonly model: string;
@@ -40,8 +45,17 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function estimateTokens(messages: readonly ChatMessage[]): number {
+  let total = 0;
+  for (const message of messages) {
+    total += Math.ceil(message.text.length / 4);
+  }
+  return Math.max(1, total);
+}
+
 class TestProvider implements Provider {
   readonly model: string;
+  private readonly failed = new Set<string>();
 
   constructor(model: string) {
     this.model = model;
@@ -53,19 +67,29 @@ class TestProvider implements Provider {
   ): AsyncGenerator<StreamEvent, void, unknown> {
     const last = messages[messages.length - 1];
     if (last === undefined || last.text.trim().length === 0) {
-      yield { type: 'error', error: 'No message content provided.' };
+      yield { type: 'error', error: 'No message content provided.', recoverable: false };
+      return;
+    }
+
+    // Deterministic recoverable failure: fail once when the user message
+    // contains "recover", then succeed on retry.
+    if (last.text.includes('recover') && !this.failed.has(last.text)) {
+      this.failed.add(last.text);
+      yield { type: 'error', error: 'Simulated transient network error.', recoverable: true };
       return;
     }
 
     for (const token of TEST_RESPONSE) {
       if (signal?.aborted) {
-        yield { type: 'error', error: 'cancelled' };
+        yield { type: 'error', error: 'cancelled', recoverable: false };
         return;
       }
       yield { type: 'delta', text: token };
       await delay(40);
     }
-    yield { type: 'done' };
+    const promptTokens = estimateTokens(messages);
+    const completionTokens = TEST_RESPONSE.length;
+    yield { type: 'done', usage: { promptTokens, completionTokens } };
   }
 }
 
@@ -80,6 +104,7 @@ class UnconfiguredProvider implements Provider {
     yield {
       type: 'error',
       error: 'Configuration invalid: set an API key via OPENAI_API_KEY, ANTHROPIC_API_KEY, or OMC_API_KEY.',
+      recoverable: false,
     };
   }
 }

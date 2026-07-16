@@ -11,6 +11,9 @@ const defaultStatus: StatusInfo = {
   connection: 'idle',
   streamingText: '',
   error: null,
+  usage: { turns: 0, promptTokens: 0, completionTokens: 0 },
+  canRetry: false,
+  canRegenerate: false,
 };
 
 describe('TUI screen rendering', () => {
@@ -46,6 +49,16 @@ describe('TUI screen rendering', () => {
     expect(screen).toContain('streaming');
   });
 
+  it('shows usage in the footer', () => {
+    const status: StatusInfo = {
+      ...defaultStatus,
+      usage: { turns: 3, promptTokens: 20, completionTokens: 22 },
+    };
+    const screen = stripAnsi(renderScreen(80, 30, '0.0.0', [], '', 0, status));
+    expect(screen).toContain('turns: 3');
+    expect(screen).toContain('tokens: 42');
+  });
+
   it('shows empty transcript placeholder', () => {
     const screen = stripAnsi(renderScreen(80, 30, '0.0.0'));
     expect(screen).toContain('Transcript');
@@ -66,6 +79,22 @@ describe('TUI screen rendering', () => {
     expect(screen).toContain('Assistant reply');
   });
 
+  it('preserves multi-turn transcript order', () => {
+    const messages = [
+      { role: 'user' as const, text: 'First question' },
+      { role: 'assistant' as const, text: 'First answer' },
+      { role: 'user' as const, text: 'Second question' },
+      { role: 'assistant' as const, text: 'Second answer' },
+      { role: 'user' as const, text: 'Third question' },
+    ];
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', messages));
+    const firstIdx = screen.indexOf('First question');
+    const secondIdx = screen.indexOf('Second question');
+    const thirdIdx = screen.indexOf('Third question');
+    expect(firstIdx).toBeLessThan(secondIdx);
+    expect(secondIdx).toBeLessThan(thirdIdx);
+  });
+
   it('shows streaming assistant text', () => {
     const status: StatusInfo = { ...defaultStatus, streamingText: 'partial response' };
     const screen = stripAnsi(renderScreen(80, 30, '0.0.0', [], '', 0, status));
@@ -78,6 +107,30 @@ describe('TUI screen rendering', () => {
     const screen = stripAnsi(renderScreen(80, 30, '0.0.0', [], '', 0, status));
     expect(screen).toContain('Error');
     expect(screen).toContain('Configuration invalid');
+  });
+
+  it('shows the retry hint when a recoverable error occurred', () => {
+    const status: StatusInfo = {
+      ...defaultStatus,
+      connection: 'error',
+      error: 'Transient error',
+      canRetry: true,
+    };
+    const screen = stripAnsi(renderScreen(80, 30, '0.0.0', [], '', 0, status));
+    expect(screen).toContain('Ctrl+R retry');
+  });
+
+  it('shows the regenerate hint when an assistant reply exists', () => {
+    const messages = [{ role: 'assistant' as const, text: 'Reply' }];
+    const status: StatusInfo = { ...defaultStatus, canRegenerate: true };
+    const screen = stripAnsi(renderScreen(80, 30, '0.0.0', messages, '', 0, status));
+    expect(screen).toContain('Ctrl+G regen');
+  });
+
+  it('does not show retry or regenerate hints by default', () => {
+    const screen = stripAnsi(renderScreen(80, 30, '0.0.0'));
+    expect(screen).not.toContain('Ctrl+R retry');
+    expect(screen).not.toContain('Ctrl+G regen');
   });
 
   it('shows the composer area', () => {

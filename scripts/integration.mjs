@@ -16,7 +16,9 @@ function tmux(...args) {
 }
 
 function capturePane() {
-  const captured = tmux('capture-pane', '-p', '-t', session, '-S', '-');
+  // Capture only the visible pane (not scrollback) so stale frames from the
+  // full-screen TUI redraw do not produce false-positive matches.
+  const captured = tmux('capture-pane', '-p', '-t', session);
   if (captured.status !== 0) {
     throw new Error(captured.stderr || 'Failed to capture tmux pane');
   }
@@ -59,7 +61,7 @@ function waitForOccurrences(expected, count, timeoutMs = 10_000) {
 try {
   // Launch the TUI with the test provider
   const launchCmd = `env OMC_PROVIDER=test ${JSON.stringify(nodeBin)} ${JSON.stringify(cli)}`;
-  const started = tmux('new-session', '-d', '-x', '120', '-y', '40', '-s', session, launchCmd);
+  const started = tmux('new-session', '-d', '-x', '120', '-y', '50', '-s', session, launchCmd);
   if (started.status !== 0) {
     throw new Error(started.stderr || 'Unable to start tmux integration session');
   }
@@ -77,45 +79,50 @@ try {
     throw new Error('Expected Connection: in status card');
   }
 
-  // Type a message and submit it
+  // === Turn 1: normal message ===
   sendKeys('Hello', 'Enter');
-
-  // Wait for the user message to appear in the transcript
-  const afterSubmit = waitForContent('Hello');
-  if (!afterSubmit.includes('You')) {
-    throw new Error('Expected "You" label in transcript after submission');
-  }
-
-  // Wait for streaming to start and the assistant response to appear
-  waitForContent('Assistant');
+  waitForContent('Hello');
   waitForContent('received your message');
-
-  // Wait for streaming to complete (connection returns to ready)
   waitForContent('ready');
 
-  // Verify the assistant message is finalized in the transcript
-  const afterStream = capturePane();
-  if (!afterStream.includes('received your message')) {
-    throw new Error('Expected assistant response in transcript');
+  // === Turn 2: recoverable failure + retry ===
+  spawnSync('sleep', ['0.3']);
+  sendKeys('please recover now', 'Enter');
+  // The provider fails once with a recoverable error
+  waitForContent('Simulated transient network error');
+  waitForContent('Ctrl+R retry');
+  // Retry the failed turn (no duplicate user message)
+  sendKeys('C-r');
+  // After retry, the assistant responds
+  waitForContent('ready');
+  const afterRetry = capturePane();
+  // The user message "please recover now" must appear exactly once (no duplication)
+  const recoverCount = (afterRetry.match(/please recover now/g) || []).length;
+  if (recoverCount !== 1) {
+    throw new Error(`Expected 1 occurrence of retried user message, found ${recoverCount}`);
   }
 
-  // Verify the session is still usable: submit a second message
+  // === Turn 3: another normal message ===
   spawnSync('sleep', ['0.3']);
-  sendKeys('Second message', 'Enter');
-  waitForContent('Second message');
-  // The assistant should respond again
-  waitForOccurrences('received your message', 2);
-  const afterSecond = waitForContent('Connection: ready');
-  // Should have two user messages now
-  const youCount = (afterSecond.match(/You/g) || []).length;
-  if (youCount < 2) {
-    throw new Error(`Expected at least 2 user messages, found ${youCount}`);
+  sendKeys('Third question', 'Enter');
+  waitForContent('Third question');
+  waitForContent('ready');
+
+  // Verify usage reflects three completed turns
+  const finalScreen = waitForContent('turns: 3');
+
+  // Verify multi-turn transcript order
+  const firstIdx = finalScreen.indexOf('Hello');
+  const secondIdx = finalScreen.indexOf('please recover now');
+  const thirdIdx = finalScreen.indexOf('Third question');
+  if (!(firstIdx < secondIdx && secondIdx < thirdIdx)) {
+    throw new Error('Transcript order is incorrect across three turns');
   }
 
   // Preserve the verified TUI itself for PR evidence before the tmux session exits.
   const evidenceDirectory = resolve('artifacts/e2e');
   mkdirSync(evidenceDirectory, { recursive: true });
-  writeFileSync(join(evidenceDirectory, 'oh-my-code.tmux.txt'), afterSecond, 'utf8');
+  writeFileSync(join(evidenceDirectory, 'oh-my-code.tmux.txt'), finalScreen, 'utf8');
 
   // Exit
   sendKeys('C-c');

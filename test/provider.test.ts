@@ -31,13 +31,47 @@ describe('TestProvider', () => {
     expect(text).toContain('received your message');
   });
 
-  it('yields an error for empty input', async () => {
+  it('reports usage on completion', async () => {
+    const config = loadConfig({});
+    const provider = createProvider(config);
+    const events = await collect(provider.stream([{ role: 'user', text: 'Hello world' }]));
+
+    const done = events.find((e) => e.type === 'done');
+    expect(done?.type).toBe('done');
+    if (done?.type === 'done') {
+      expect(done.usage.promptTokens).toBeGreaterThan(0);
+      expect(done.usage.completionTokens).toBeGreaterThan(0);
+    }
+  });
+
+  it('yields a non-recoverable error for empty input', async () => {
     const config = loadConfig({});
     const provider = createProvider(config);
     const events = await collect(provider.stream([{ role: 'user', text: '   ' }]));
 
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe('error');
+    if (events[0]?.type === 'error') {
+      expect(events[0].recoverable).toBe(false);
+    }
+  });
+
+  it('fails once on a recover trigger then succeeds on retry', async () => {
+    const config = loadConfig({});
+    const provider = createProvider(config);
+
+    // First attempt: recoverable failure
+    const first = await collect(provider.stream([{ role: 'user', text: 'please recover now' }]));
+    expect(first).toHaveLength(1);
+    expect(first[0]?.type).toBe('error');
+    if (first[0]?.type === 'error') {
+      expect(first[0].recoverable).toBe(true);
+    }
+
+    // Retry: succeeds
+    const second = await collect(provider.stream([{ role: 'user', text: 'please recover now' }]));
+    const done = second.find((e) => e.type === 'done');
+    expect(done?.type).toBe('done');
   });
 
   it('supports cancellation via AbortSignal', async () => {
@@ -65,7 +99,7 @@ describe('TestProvider', () => {
 });
 
 describe('UnconfiguredProvider', () => {
-  it('yields a redacted configuration error', async () => {
+  it('yields a redacted non-recoverable configuration error', async () => {
     const config = loadConfig({ OMC_PROVIDER: 'openai' });
     const provider = createProvider(config);
     const events = await collect(provider.stream([{ role: 'user', text: 'Hello' }]));
@@ -75,6 +109,7 @@ describe('UnconfiguredProvider', () => {
     if (events[0]?.type === 'error') {
       expect(events[0].error).toContain('Configuration invalid');
       expect(events[0].error).not.toContain('undefined');
+      expect(events[0].recoverable).toBe(false);
     }
   });
 });
