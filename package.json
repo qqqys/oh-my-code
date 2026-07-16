@@ -1,0 +1,30 @@
+{
+  "name": "oh-my-code",
+  "version": "0.0.0",
+  "description": "A repository-aware code agent CLI with Dynamic Workflow orchestration.",
+  "type": "module",
+  "bin": {
+    "oh-my-code": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "unit": "vitest run",
+    "integration": "node scripts/integration.mjs",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.qwen/
+.env
+.env.*
+!.env.example
+artifacts/e2e/
+*.log
+.DS_Store
