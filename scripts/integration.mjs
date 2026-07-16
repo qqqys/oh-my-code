@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -42,6 +42,18 @@ function waitForContent(expected, timeoutMs = 10_000) {
     spawnSync('sleep', ['0.25']);
   }
   throw new Error(`Timed out waiting for content: ${expected}`);
+}
+
+function waitForOccurrences(expected, count, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const content = capturePane();
+    if (content.split(expected).length - 1 >= count) {
+      return content;
+    }
+    spawnSync('sleep', ['0.25']);
+  }
+  throw new Error(`Timed out waiting for ${count} occurrences of: ${expected}`);
 }
 
 try {
@@ -92,12 +104,18 @@ try {
   sendKeys('Second message', 'Enter');
   waitForContent('Second message');
   // The assistant should respond again
-  const afterSecond = waitForContent('received your message');
+  waitForOccurrences('received your message', 2);
+  const afterSecond = waitForContent('Connection: ready');
   // Should have two user messages now
   const youCount = (afterSecond.match(/You/g) || []).length;
   if (youCount < 2) {
     throw new Error(`Expected at least 2 user messages, found ${youCount}`);
   }
+
+  // Preserve the verified TUI itself for PR evidence before the tmux session exits.
+  const evidenceDirectory = resolve('artifacts/e2e');
+  mkdirSync(evidenceDirectory, { recursive: true });
+  writeFileSync(join(evidenceDirectory, 'oh-my-code.tmux.txt'), afterSecond, 'utf8');
 
   // Exit
   sendKeys('C-c');
