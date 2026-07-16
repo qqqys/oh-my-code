@@ -2,7 +2,7 @@ export const VERSION = '0.0.0';
 
 export function helpText(): string {
   return [
-    'Oh My Code',
+    'Oh My Code — repository-aware code agent CLI',
     '',
     'Usage:',
     '  oh-my-code [options]',
@@ -11,7 +11,7 @@ export function helpText(): string {
     '  -h, --help     Show help',
     '  -v, --version  Show version',
     '',
-    'The interactive TUI is being delivered in issue #10.',
+    'Run without options to launch the interactive terminal.',
   ].join('\n');
 }
 
