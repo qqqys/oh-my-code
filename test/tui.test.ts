@@ -26,20 +26,32 @@ describe('TUI screen rendering', () => {
     expect(screen).toContain('not connected');
   });
 
-  it('shows the transcript area', () => {
+  it('shows empty transcript placeholder', () => {
     const screen = stripAnsi(renderScreen(80, 30, '0.0.0'));
     expect(screen).toContain('Transcript');
     expect(screen).toContain('No messages yet.');
   });
 
+  it('shows submitted messages in the transcript', () => {
+    const messages = [{ role: 'user' as const, text: 'Hello world' }];
+    const screen = stripAnsi(renderScreen(80, 30, '0.0.0', messages));
+    expect(screen).toContain('You');
+    expect(screen).toContain('Hello world');
+  });
+
   it('shows the composer area', () => {
     const screen = stripAnsi(renderScreen(80, 30, '0.0.0'));
     expect(screen).toContain('Composer');
-    expect(screen).toContain('Type a message or command');
   });
 
-  it('shows the footer with exit hint', () => {
+  it('shows the composer input text', () => {
+    const screen = stripAnsi(renderScreen(80, 30, '0.0.0', [], 'typing', 3));
+    expect(screen).toContain('typing');
+  });
+
+  it('shows the footer with key hints', () => {
     const screen = stripAnsi(renderScreen(80, 30, '0.0.0'));
+    expect(screen).toContain('Enter');
     expect(screen).toContain('Ctrl+C');
   });
 
@@ -51,5 +63,17 @@ describe('TUI screen rendering', () => {
 
   it('includes all five LOGO lines', () => {
     expect(LOGO).toHaveLength(5);
+  });
+
+  it('wraps long transcript messages', () => {
+    const longText = 'a'.repeat(200);
+    const messages = [{ role: 'user' as const, text: longText }];
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', messages));
+    expect(screen).toContain('aaaa');
+  });
+
+  it('renders Unicode composer input', () => {
+    const screen = stripAnsi(renderScreen(80, 30, '0.0.0', [], '日本語', 2));
+    expect(screen).toContain('日本語');
   });
 });
