@@ -1,0 +1,75 @@
+                                  ___  _   _     __  __            ____          _
+                                 / _ \| | | |   |  \/  | ___   _  / ___|___   __| | ___
+                                | | | | |_| |   | |\/| |/ _ \ | | |   / _ \ / _` |/ _ \
+                                | |_| |  _  |   | |  | | (_) || | |__| (_) | (_| |  __/
+                                \___/|_| |_|   |_|  |_|\___/ |_|  \____\___/ \__,_|\___|
+                                                         v0.0.0
+
+  ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │   Status                                                                                                       │
+  │                                                                                                                │
+  │   Model:      test:test-model (no key)                                                                         │
+  │   Connection: ready                                                                                            │
+  │   Repository: none                                                                                             │
+  └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  ─ Transcript ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+                                                          ...
+  cli.ts
+  composer.ts
+  config.ts
+  provider.ts
+  tools.ts
+  tui.ts
+
+  Assistant
+  I inspected the repository with list_files. The results are shown above.
+
+  You
+  read tsconfig.build.json
+
+  Tool read_file(path: tsconfig.build.json)
+  {
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+      "noEmit": false,
+      "declaration": true,
+      "sourceMap": true,
+      "outDir": "dist",
+      "rootDir": "src"
+    },
+    "include": ["src/**/*.ts"],
+    "exclude": ["test/**/*.ts"]
+  }
+
+
+  Assistant
+  I inspected the repository with read_file. The results are shown above.
+
+  You
+  search for launchTui
+
+  Tool search_content(pattern: launchTui, path: .)
+  artifacts/e2e/oh-my-code.tmux.txt:55: search for launchTui
+  artifacts/e2e/oh-my-code.tmux.txt:57: Tool search_content(pattern: launchTui, path: .)
+  artifacts/e2e/oh-my-code.tmux.txt:58: scripts/integration.mjs:89: sendKeys('search for launchTui', 'Enter');
+  artifacts/e2e/oh-my-code.tmux.txt:59: src/cli.ts:12: import { launchTui } from './tui.js';
+  artifacts/e2e/oh-my-code.tmux.txt:60: src/cli.ts:17: await launchTui({ version: VERSION });
+  artifacts/e2e/oh-my-code.tmux.txt:61: src/tui.ts:325: export async function launchTui(options: TuiOptions): Promis
+  e<void> {
+  scripts/integration.mjs:89: sendKeys('search for launchTui', 'Enter');
+  src/cli.ts:12: import { launchTui } from './tui.js';
+  src/cli.ts:17: await launchTui({ version: VERSION });
+  src/tui.ts:325: export async function launchTui(options: TuiOptions): Promise<void> {
+
+  Assistant
+  I inspected the repository with search_content. The results are shown above.
+
+
+  ─ Composer ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  ❯
+
+                                                turns: 3  ·  tokens: 119
+                       Enter send  ·  ↑↓ history  ·  Ctrl+G regen  ·  Esc cancel  ·  Ctrl+C exit
