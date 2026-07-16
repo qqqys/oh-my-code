@@ -2,7 +2,7 @@ import process from 'node:process';
 
 import { ComposerState, type TranscriptMessage } from './composer.js';
 import { loadConfig, redact, type ModelConfig } from './config.js';
-import { createProvider, type ChatMessage, type Provider } from './provider.js';
+import { createProvider, type ChatMessage, type Provider, type Usage } from './provider.js';
 
 const ESC = '\x1b[';
 
@@ -40,11 +40,20 @@ export const LOGO = [
 
 export type ConnectionState = 'idle' | 'connecting' | 'streaming' | 'done' | 'error';
 
+export interface UsageInfo {
+  turns: number;
+  promptTokens: number;
+  completionTokens: number;
+}
+
 export interface StatusInfo {
   model: string;
   connection: ConnectionState;
   streamingText: string;
   error: string | null;
+  usage: UsageInfo;
+  canRetry: boolean;
+  canRegenerate: boolean;
 }
 
 function stripAnsi(text: string): string {
@@ -108,6 +117,22 @@ function connectionLabel(state: ConnectionState): string {
   }
 }
 
+function usageLabel(usage: UsageInfo): string {
+  const total = usage.promptTokens + usage.completionTokens;
+  return fg.dim(`turns: ${usage.turns}  ·  tokens: ${total}`);
+}
+
+function actionHints(status: StatusInfo): string {
+  const hints: string[] = ['Enter send', '↑↓ history', 'Esc cancel', 'Ctrl+C exit'];
+  if (status.canRetry) {
+    hints.splice(2, 0, 'Ctrl+R retry');
+  }
+  if (status.canRegenerate) {
+    hints.splice(status.canRetry ? 3 : 2, 0, 'Ctrl+G regen');
+  }
+  return hints.join('  ·  ');
+}
+
 export function renderScreen(
   width: number,
   height: number,
@@ -115,7 +140,15 @@ export function renderScreen(
   messages: readonly TranscriptMessage[] = [],
   composerInput = '',
   composerCursor = 0,
-  status: StatusInfo = { model: 'none', connection: 'idle', streamingText: '', error: null },
+  status: StatusInfo = {
+    model: 'none',
+    connection: 'idle',
+    streamingText: '',
+    error: null,
+    usage: { turns: 0, promptTokens: 0, completionTokens: 0 },
+    canRetry: false,
+    canRegenerate: false,
+  },
 ): string {
   const lines: string[] = [];
 
@@ -177,17 +210,19 @@ export function renderScreen(
   lines.push('');
 
   // Footer — fill remaining lines
-  while (lines.length < height - 1) {
+  while (lines.length < height - 2) {
     lines.push('');
   }
 
-  const footer = center(
-    fg.dim('Enter send  ·  ↑↓ history  ·  Esc cancel  ·  Ctrl+C exit'),
-    width,
-  );
-  lines.push(footer);
+  lines.push(center(usageLabel(status.usage), width));
+  lines.push(center(fg.dim(actionHints(status)), width));
 
-  return lines.slice(0, height).join('\r\n');
+  // Pad every line to full width so a redraw fully overwrites the prior frame
+  // and no stale characters bleed through.
+  return lines
+    .slice(0, height)
+    .map((line) => pad(line, width))
+    .join('\r\n');
 }
 
 export interface TuiOptions {
@@ -202,6 +237,8 @@ const KEY = {
   delete: 0x08,
   ctrlC: 0x03,
   ctrlD: 0x04,
+  ctrlG: 0x07,
+  ctrlR: 0x12,
 } as const;
 
 function parseKey(data: Buffer): { type: string; value?: string } {
@@ -213,6 +250,8 @@ function parseKey(data: Buffer): { type: string; value?: string } {
     if (first === KEY.escape) return { type: 'escape' };
     if (first === KEY.backspace || first === KEY.delete) return { type: 'backspace' };
     if (first === KEY.ctrlC || first === KEY.ctrlD) return { type: 'exit' };
+    if (first === KEY.ctrlR) return { type: 'retry' };
+    if (first === KEY.ctrlG) return { type: 'regenerate' };
     if (first >= 0x20) return { type: 'char', value: data.toString('utf8') };
     return { type: 'unknown' };
   }
@@ -256,16 +295,36 @@ export async function launchTui(options: TuiOptions): Promise<void> {
   let errorMessage: string | null = null;
   let streaming = false;
   let abortController: AbortController | null = null;
+  let lastErrorRecoverable = false;
+  const usage: UsageInfo = { turns: 0, promptTokens: 0, completionTokens: 0 };
 
-  if (!stdin.isTTY || !stdout.isTTY) {
-    const { columns, rows } = stdout;
-    const status: StatusInfo = {
+  function lastMessage(): TranscriptMessage | undefined {
+    return composer.messages[composer.messages.length - 1];
+  }
+
+  function canRetry(): boolean {
+    return !streaming && connection === 'error' && lastErrorRecoverable;
+  }
+
+  function canRegenerate(): boolean {
+    return !streaming && lastMessage()?.role === 'assistant';
+  }
+
+  function buildStatus(): StatusInfo {
+    return {
       model: redact(config),
       connection,
       streamingText,
       error: errorMessage,
+      usage,
+      canRetry: canRetry(),
+      canRegenerate: canRegenerate(),
     };
-    const screen = renderScreen(columns ?? 80, rows ?? 24, version, [], '', 0, status);
+  }
+
+  if (!stdin.isTTY || !stdout.isTTY) {
+    const { columns, rows } = stdout;
+    const screen = renderScreen(columns ?? 80, rows ?? 24, version, [], '', 0, buildStatus());
     stdout.write(screen + '\n');
     return;
   }
@@ -281,12 +340,6 @@ export async function launchTui(options: TuiOptions): Promise<void> {
 
   function render(): void {
     const { width, height } = getSize();
-    const status: StatusInfo = {
-      model: redact(config),
-      connection,
-      streamingText,
-      error: errorMessage,
-    };
     const screen = renderScreen(
       width,
       height,
@@ -294,7 +347,7 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       composer.messages,
       composer.input,
       composer.cursorPosition,
-      status,
+      buildStatus(),
     );
     stdout.write(seq.home + screen);
   }
@@ -308,14 +361,19 @@ export async function launchTui(options: TuiOptions): Promise<void> {
     process.exit(0);
   }
 
-  async function startStream(): Promise<void> {
+  function applyUsage(delta: Usage): void {
+    usage.promptTokens += delta.promptTokens;
+    usage.completionTokens += delta.completionTokens;
+  }
+
+  async function streamResponse(): Promise<void> {
     if (streaming) return;
-    const userMessages = composer.messages.filter((m) => m.role === 'user');
-    const last = userMessages[userMessages.length - 1];
-    if (last === undefined) return;
+    const last = lastMessage();
+    if (last === undefined || last.role !== 'user') return;
 
     streaming = true;
     errorMessage = null;
+    lastErrorRecoverable = false;
     streamingText = '';
     connection = 'connecting';
     render();
@@ -338,6 +396,8 @@ export async function launchTui(options: TuiOptions): Promise<void> {
           case 'done':
             connection = 'done';
             composer.messages.push({ role: 'assistant', text: streamingText });
+            applyUsage(event.usage);
+            usage.turns += 1;
             streamingText = '';
             render();
             break;
@@ -345,9 +405,11 @@ export async function launchTui(options: TuiOptions): Promise<void> {
             if (event.error === 'cancelled') {
               connection = 'done';
               streamingText = '';
+              usage.turns += 1;
             } else {
               connection = 'error';
               errorMessage = event.error;
+              lastErrorRecoverable = event.recoverable;
             }
             render();
             break;
@@ -356,6 +418,7 @@ export async function launchTui(options: TuiOptions): Promise<void> {
     } catch (error) {
       connection = 'error';
       errorMessage = error instanceof Error ? error.message : 'Unknown streaming error';
+      lastErrorRecoverable = true;
       render();
     } finally {
       streaming = false;
@@ -363,7 +426,22 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       if (connection === 'connecting') {
         connection = 'done';
       }
+      render();
     }
+  }
+
+  function retry(): void {
+    if (!canRetry()) return;
+    void streamResponse();
+  }
+
+  function regenerate(): void {
+    if (!canRegenerate()) return;
+    // Remove the last assistant message, then re-stream the prior user turn.
+    if (lastMessage()?.role === 'assistant') {
+      composer.messages.pop();
+    }
+    void streamResponse();
   }
 
   function onKeypress(data: Buffer): void {
@@ -402,10 +480,16 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       case 'enter': {
         const submitted = composer.submit();
         if (submitted) {
-          void startStream();
+          void streamResponse();
         }
         break;
       }
+      case 'retry':
+        retry();
+        return;
+      case 'regenerate':
+        regenerate();
+        return;
       case 'escape':
         if (streaming && abortController) {
           abortController.abort();
