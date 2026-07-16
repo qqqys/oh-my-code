@@ -1,6 +1,8 @@
 import process from 'node:process';
 
 import { ComposerState, type TranscriptMessage } from './composer.js';
+import { loadConfig, redact, type ModelConfig } from './config.js';
+import { createProvider, type ChatMessage, type Provider } from './provider.js';
 
 const ESC = '\x1b[';
 
@@ -24,6 +26,7 @@ const fg = {
   cyan: (s: string) => `${ESC}36m${s}${ESC}0m`,
   gray: (s: string) => `${ESC}90m${s}${ESC}0m`,
   white: (s: string) => `${ESC}37m${s}${ESC}0m`,
+  red: (s: string) => `${ESC}31m${s}${ESC}0m`,
   reverse: (s: string) => `${ESC}7m${s}${ESC}0m`,
 } as const;
 
@@ -34,6 +37,15 @@ export const LOGO = [
   '| |_| |  _  |   | |  | | (_) || | |__| (_) | (_| |  __/',
   ' \\___/|_| |_|   |_|  |_|\\___/ |_|  \\____\\___/ \\__,_|\\___|',
 ];
+
+export type ConnectionState = 'idle' | 'connecting' | 'streaming' | 'done' | 'error';
+
+export interface StatusInfo {
+  model: string;
+  connection: ConnectionState;
+  streamingText: string;
+  error: string | null;
+}
 
 function stripAnsi(text: string): string {
   // eslint-disable-next-line no-control-regex
@@ -81,6 +93,21 @@ function renderComposerLine(input: string, cursor: number, prompt: string): stri
   return `  ${fg.green(prompt)} ${before}${fg.reverse(at)}${after}`;
 }
 
+function connectionLabel(state: ConnectionState): string {
+  switch (state) {
+    case 'idle':
+      return fg.yellow('not connected');
+    case 'connecting':
+      return fg.yellow('connecting…');
+    case 'streaming':
+      return fg.green('streaming');
+    case 'done':
+      return fg.green('ready');
+    case 'error':
+      return fg.red('error');
+  }
+}
+
 export function renderScreen(
   width: number,
   height: number,
@@ -88,6 +115,7 @@ export function renderScreen(
   messages: readonly TranscriptMessage[] = [],
   composerInput = '',
   composerCursor = 0,
+  status: StatusInfo = { model: 'none', connection: 'idle', streamingText: '', error: null },
 ): string {
   const lines: string[] = [];
 
@@ -103,23 +131,39 @@ export function renderScreen(
   lines.push(`  ${fg.blue('┌' + '─'.repeat(cardInner + 2) + '┐')}`);
   lines.push(fg.blue(boxLine('│', fg.bold('  Status'), '│', cardInner)));
   lines.push(fg.blue(boxLine('│', '', '│', cardInner)));
-  lines.push(fg.blue(boxLine('│', `  Model:      ${fg.yellow('not connected')}`, '│', cardInner)));
+  lines.push(fg.blue(boxLine('│', `  Model:      ${status.model}`, '│', cardInner)));
+  lines.push(fg.blue(boxLine('│', `  Connection: ${connectionLabel(status.connection)}`, '│', cardInner)));
   lines.push(fg.blue(boxLine('│', `  Repository: ${fg.dim('none')}`, '│', cardInner)));
-  lines.push(fg.blue(boxLine('│', `  Session:    ${fg.dim('none')}`, '│', cardInner)));
   lines.push(`  ${fg.blue('└' + '─'.repeat(cardInner + 2) + '┘')}`);
   lines.push('');
 
   // Transcript area
   lines.push(`  ${fg.gray('─ Transcript ' + '─'.repeat(Math.max(0, width - 16)))}`);
   lines.push('');
-  if (messages.length === 0) {
+  const transcriptWidth = width - 6;
+  if (messages.length === 0 && status.streamingText.length === 0 && status.error === null) {
     lines.push(center(fg.dim('No messages yet.'), width));
+    lines.push('');
   } else {
-    const transcriptWidth = width - 6;
     for (const message of messages) {
-      lines.push(`  ${fg.cyan(fg.bold('You'))}`);
+      const label = message.role === 'user' ? fg.cyan(fg.bold('You')) : fg.green(fg.bold('Assistant'));
+      lines.push(`  ${label}`);
       for (const wrapped of wrapText(message.text, transcriptWidth)) {
         lines.push(`  ${wrapped}`);
+      }
+      lines.push('');
+    }
+    if (status.streamingText.length > 0) {
+      lines.push(`  ${fg.green(fg.bold('Assistant'))} ${fg.dim('(streaming…)')}`);
+      for (const wrapped of wrapText(status.streamingText, transcriptWidth)) {
+        lines.push(`  ${wrapped}`);
+      }
+      lines.push('');
+    }
+    if (status.error !== null) {
+      lines.push(`  ${fg.red(fg.bold('Error'))}`);
+      for (const wrapped of wrapText(status.error, transcriptWidth)) {
+        lines.push(`  ${fg.red(wrapped)}`);
       }
       lines.push('');
     }
@@ -148,6 +192,7 @@ export function renderScreen(
 
 export interface TuiOptions {
   version: string;
+  config?: ModelConfig;
 }
 
 const KEY = {
@@ -200,13 +245,27 @@ function parseKey(data: Buffer): { type: string; value?: string } {
 
 export async function launchTui(options: TuiOptions): Promise<void> {
   const { version } = options;
+  const config = options.config ?? loadConfig();
+  const provider: Provider = createProvider(config);
   const stdin = process.stdin;
   const stdout = process.stdout;
   const composer = new ComposerState();
 
+  let connection: ConnectionState = 'idle';
+  let streamingText = '';
+  let errorMessage: string | null = null;
+  let streaming = false;
+  let abortController: AbortController | null = null;
+
   if (!stdin.isTTY || !stdout.isTTY) {
     const { columns, rows } = stdout;
-    const screen = renderScreen(columns ?? 80, rows ?? 24, version);
+    const status: StatusInfo = {
+      model: redact(config),
+      connection,
+      streamingText,
+      error: errorMessage,
+    };
+    const screen = renderScreen(columns ?? 80, rows ?? 24, version, [], '', 0, status);
     stdout.write(screen + '\n');
     return;
   }
@@ -222,6 +281,12 @@ export async function launchTui(options: TuiOptions): Promise<void> {
 
   function render(): void {
     const { width, height } = getSize();
+    const status: StatusInfo = {
+      model: redact(config),
+      connection,
+      streamingText,
+      error: errorMessage,
+    };
     const screen = renderScreen(
       width,
       height,
@@ -229,6 +294,7 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       composer.messages,
       composer.input,
       composer.cursorPosition,
+      status,
     );
     stdout.write(seq.home + screen);
   }
@@ -236,9 +302,68 @@ export async function launchTui(options: TuiOptions): Promise<void> {
   function exit(): void {
     if (!running) return;
     running = false;
+    if (abortController) abortController.abort();
     cleanup();
     stdout.write(seq.cursorShow + seq.altOff);
     process.exit(0);
+  }
+
+  async function startStream(): Promise<void> {
+    if (streaming) return;
+    const userMessages = composer.messages.filter((m) => m.role === 'user');
+    const last = userMessages[userMessages.length - 1];
+    if (last === undefined) return;
+
+    streaming = true;
+    errorMessage = null;
+    streamingText = '';
+    connection = 'connecting';
+    render();
+
+    abortController = new AbortController();
+    const chatMessages: ChatMessage[] = composer.messages.map((m) => ({
+      role: m.role,
+      text: m.text,
+    }));
+
+    try {
+      for await (const event of provider.stream(chatMessages, abortController.signal)) {
+        if (!running) break;
+        switch (event.type) {
+          case 'delta':
+            connection = 'streaming';
+            streamingText += event.text;
+            render();
+            break;
+          case 'done':
+            connection = 'done';
+            composer.messages.push({ role: 'assistant', text: streamingText });
+            streamingText = '';
+            render();
+            break;
+          case 'error':
+            if (event.error === 'cancelled') {
+              connection = 'done';
+              streamingText = '';
+            } else {
+              connection = 'error';
+              errorMessage = event.error;
+            }
+            render();
+            break;
+        }
+      }
+    } catch (error) {
+      connection = 'error';
+      errorMessage = error instanceof Error ? error.message : 'Unknown streaming error';
+      render();
+    } finally {
+      streaming = false;
+      abortController = null;
+      if (connection === 'connecting') {
+        connection = 'done';
+      }
+    }
   }
 
   function onKeypress(data: Buffer): void {
@@ -274,11 +399,19 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       case 'down':
         composer.historyDown();
         break;
-      case 'enter':
-        composer.submit();
+      case 'enter': {
+        const submitted = composer.submit();
+        if (submitted) {
+          void startStream();
+        }
         break;
+      }
       case 'escape':
-        composer.cancel();
+        if (streaming && abortController) {
+          abortController.abort();
+        } else {
+          composer.cancel();
+        }
         break;
       default:
         break;

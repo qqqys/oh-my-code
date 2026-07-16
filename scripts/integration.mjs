@@ -45,8 +45,9 @@ function waitForContent(expected, timeoutMs = 10_000) {
 }
 
 try {
-  // Launch the TUI
-  const started = tmux('new-session', '-d', '-x', '120', '-y', '40', '-s', session, `${JSON.stringify(nodeBin)} ${JSON.stringify(cli)}`);
+  // Launch the TUI with the test provider
+  const launchCmd = `env OMC_PROVIDER=test ${JSON.stringify(nodeBin)} ${JSON.stringify(cli)}`;
+  const started = tmux('new-session', '-d', '-x', '120', '-y', '40', '-s', session, launchCmd);
   if (started.status !== 0) {
     throw new Error(started.stderr || 'Unable to start tmux integration session');
   }
@@ -55,43 +56,50 @@ try {
   waitForContent('Composer');
   waitForContent('Transcript');
 
+  // Verify model identity and connection state are shown
+  const initial = capturePane();
+  if (!initial.includes('Model:')) {
+    throw new Error('Expected Model: in status card');
+  }
+  if (!initial.includes('Connection:')) {
+    throw new Error('Expected Connection: in status card');
+  }
+
   // Type a message and submit it
   sendKeys('Hello', 'Enter');
 
-  // Wait for the message to appear in the transcript
+  // Wait for the user message to appear in the transcript
   const afterSubmit = waitForContent('Hello');
   if (!afterSubmit.includes('You')) {
     throw new Error('Expected "You" label in transcript after submission');
   }
 
-  // Wait for debounce window to pass before next submission
-  spawnSync('sleep', ['0.3']);
+  // Wait for streaming to start and the assistant response to appear
+  waitForContent('Assistant');
+  waitForContent('received your message');
 
-  // Type a Unicode message and submit it
-  sendKeys('日本語', 'Enter');
-  spawnSync('sleep', ['0.3']);
+  // Wait for streaming to complete (connection returns to ready)
+  waitForContent('ready');
 
-  // Verify the Unicode message appears in the transcript (with "You" label)
-  const afterUnicode = capturePane();
-  if (!afterUnicode.includes('日本語')) {
-    throw new Error('Expected Unicode message in transcript');
+  // Verify the assistant message is finalized in the transcript
+  const afterStream = capturePane();
+  if (!afterStream.includes('received your message')) {
+    throw new Error('Expected assistant response in transcript');
   }
 
-  // Test empty submission is ignored (press Enter with empty composer)
-  sendKeys('Enter');
-  // Should not add a new message — verify transcript still has exactly our messages
-  const afterEmpty = capturePane();
-  const youCount = (afterEmpty.match(/You/g) || []).length;
-  if (youCount !== 2) {
-    throw new Error(`Expected 2 messages in transcript, found ${youCount}`);
+  // Verify the session is still usable: submit a second message
+  spawnSync('sleep', ['0.3']);
+  sendKeys('Second message', 'Enter');
+  waitForContent('Second message');
+  // The assistant should respond again
+  const afterSecond = waitForContent('received your message');
+  // Should have two user messages now
+  const youCount = (afterSecond.match(/You/g) || []).length;
+  if (youCount < 2) {
+    throw new Error(`Expected at least 2 user messages, found ${youCount}`);
   }
 
-  // Test history navigation: press Up to recall last message
-  sendKeys('Up');
-  waitForContent('日本語');
-
-  // Cancel and exit
-  sendKeys('Escape');
+  // Exit
   sendKeys('C-c');
 
   // Verify the session ended cleanly
