@@ -1,5 +1,7 @@
 import process from 'node:process';
 
+import { ComposerState, type TranscriptMessage } from './composer.js';
+
 const ESC = '\x1b[';
 
 const seq = {
@@ -22,6 +24,7 @@ const fg = {
   cyan: (s: string) => `${ESC}36m${s}${ESC}0m`,
   gray: (s: string) => `${ESC}90m${s}${ESC}0m`,
   white: (s: string) => `${ESC}37m${s}${ESC}0m`,
+  reverse: (s: string) => `${ESC}7m${s}${ESC}0m`,
 } as const;
 
 export const LOGO = [
@@ -32,29 +35,60 @@ export const LOGO = [
   ' \\___/|_| |_|   |_|  |_|\\___/ |_|  \\____\\___/ \\__,_|\\___|',
 ];
 
-function pad(text: string, width: number): string {
-  const visible = stripAnsi(text);
-  if (visible.length >= width) return text;
-  return text + ' '.repeat(width - visible.length);
-}
-
-function center(text: string, width: number): string {
-  const visible = stripAnsi(text);
-  if (visible.length >= width) return text;
-  const left = Math.floor((width - visible.length) / 2);
-  return ' '.repeat(left) + text;
-}
-
 function stripAnsi(text: string): string {
   // eslint-disable-next-line no-control-regex
   return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+}
+
+function visibleLength(text: string): number {
+  return Array.from(stripAnsi(text)).length;
+}
+
+function pad(text: string, width: number): string {
+  const visible = visibleLength(text);
+  if (visible >= width) return text;
+  return text + ' '.repeat(width - visible);
+}
+
+function center(text: string, width: number): string {
+  const visible = visibleLength(text);
+  if (visible >= width) return text;
+  const left = Math.floor((width - visible) / 2);
+  return ' '.repeat(left) + text;
 }
 
 function boxLine(left: string, content: string, right: string, innerWidth: number): string {
   return `  ${left} ${pad(content, innerWidth)} ${right}`;
 }
 
-export function renderScreen(width: number, height: number, version: string): string {
+function wrapText(text: string, maxWidth: number): string[] {
+  const points = Array.from(text);
+  const lines: string[] = [];
+  for (let i = 0; i < points.length; i += maxWidth) {
+    lines.push(points.slice(i, i + maxWidth).join(''));
+  }
+  return lines.length > 0 ? lines : [''];
+}
+
+function renderComposerLine(input: string, cursor: number, prompt: string): string {
+  const points = Array.from(input);
+  if (points.length === 0) {
+    return `  ${fg.green(prompt)} ${fg.reverse(' ')}`;
+  }
+  const before = points.slice(0, cursor).join('');
+  const at = points[cursor] ?? ' ';
+  const after = points.slice(cursor + 1).join('');
+  return `  ${fg.green(prompt)} ${before}${fg.reverse(at)}${after}`;
+}
+
+export function renderScreen(
+  width: number,
+  height: number,
+  version: string,
+  messages: readonly TranscriptMessage[] = [],
+  composerInput = '',
+  composerCursor = 0,
+): string {
   const lines: string[] = [];
 
   // Logo block
@@ -78,13 +112,24 @@ export function renderScreen(width: number, height: number, version: string): st
   // Transcript area
   lines.push(`  ${fg.gray('─ Transcript ' + '─'.repeat(Math.max(0, width - 16)))}`);
   lines.push('');
-  lines.push(center(fg.dim('No messages yet.'), width));
+  if (messages.length === 0) {
+    lines.push(center(fg.dim('No messages yet.'), width));
+  } else {
+    const transcriptWidth = width - 6;
+    for (const message of messages) {
+      lines.push(`  ${fg.cyan(fg.bold('You'))}`);
+      for (const wrapped of wrapText(message.text, transcriptWidth)) {
+        lines.push(`  ${wrapped}`);
+      }
+      lines.push('');
+    }
+  }
   lines.push('');
 
   // Composer
   lines.push(`  ${fg.gray('─ Composer ' + '─'.repeat(Math.max(0, width - 14)))}`);
   lines.push('');
-  lines.push(`  ${fg.green('❯')} ${fg.dim('Type a message or command…')}`);
+  lines.push(renderComposerLine(composerInput, composerCursor, '❯'));
   lines.push('');
 
   // Footer — fill remaining lines
@@ -93,7 +138,7 @@ export function renderScreen(width: number, height: number, version: string): st
   }
 
   const footer = center(
-    fg.dim('Ctrl+C exit  ·  '),
+    fg.dim('Enter send  ·  ↑↓ history  ·  Esc cancel  ·  Ctrl+C exit'),
     width,
   );
   lines.push(footer);
@@ -105,10 +150,59 @@ export interface TuiOptions {
   version: string;
 }
 
+const KEY = {
+  enter: 0x0d,
+  escape: 0x1b,
+  backspace: 0x7f,
+  delete: 0x08,
+  ctrlC: 0x03,
+  ctrlD: 0x04,
+} as const;
+
+function parseKey(data: Buffer): { type: string; value?: string } {
+  const first = data[0];
+  if (first === undefined) return { type: 'unknown' };
+
+  if (data.length === 1) {
+    if (first === KEY.enter) return { type: 'enter' };
+    if (first === KEY.escape) return { type: 'escape' };
+    if (first === KEY.backspace || first === KEY.delete) return { type: 'backspace' };
+    if (first === KEY.ctrlC || first === KEY.ctrlD) return { type: 'exit' };
+    if (first >= 0x20) return { type: 'char', value: data.toString('utf8') };
+    return { type: 'unknown' };
+  }
+
+  const str = data.toString('utf8');
+
+  // ANSI escape sequences
+  if (str.startsWith('\x1b[')) {
+    switch (str) {
+      case '\x1b[A': return { type: 'up' };
+      case '\x1b[B': return { type: 'down' };
+      case '\x1b[C': return { type: 'right' };
+      case '\x1b[D': return { type: 'left' };
+      case '\x1b[H': return { type: 'home' };
+      case '\x1b[F': return { type: 'end' };
+      case '\x1b[3~': return { type: 'deleteForward' };
+      case '\x1b[1~': return { type: 'home' };
+      case '\x1b[4~': return { type: 'end' };
+      default: return { type: 'unknown' };
+    }
+  }
+
+  // Multi-byte Unicode character
+  if (first >= 0x20 && first !== 0x7f) {
+    return { type: 'char', value: str };
+  }
+
+  return { type: 'unknown' };
+}
+
 export async function launchTui(options: TuiOptions): Promise<void> {
   const { version } = options;
   const stdin = process.stdin;
   const stdout = process.stdout;
+  const composer = new ComposerState();
 
   if (!stdin.isTTY || !stdout.isTTY) {
     const { columns, rows } = stdout;
@@ -118,7 +212,6 @@ export async function launchTui(options: TuiOptions): Promise<void> {
   }
 
   let running = true;
-  let inputBuffer = '';
 
   function getSize(): { width: number; height: number } {
     return {
@@ -129,7 +222,14 @@ export async function launchTui(options: TuiOptions): Promise<void> {
 
   function render(): void {
     const { width, height } = getSize();
-    const screen = renderScreen(width, height, version);
+    const screen = renderScreen(
+      width,
+      height,
+      version,
+      composer.messages,
+      composer.input,
+      composer.cursorPosition,
+    );
     stdout.write(seq.home + screen);
   }
 
@@ -142,27 +242,48 @@ export async function launchTui(options: TuiOptions): Promise<void> {
   }
 
   function onKeypress(data: Buffer): void {
-    for (const byte of data) {
-      if (byte === 0x03 || byte === 0x04) {
+    const key = parseKey(data);
+    switch (key.type) {
+      case 'exit':
         exit();
         return;
-      }
-      if (byte === 0x1b) continue;
-      if (byte === 0x7f || byte === 0x08) {
-        inputBuffer = inputBuffer.slice(0, -1);
-        render();
-        continue;
-      }
-      if (byte === 0x0d) {
-        inputBuffer = '';
-        render();
-        continue;
-      }
-      if (byte >= 0x20 && byte < 0x7f) {
-        inputBuffer += String.fromCharCode(byte);
-        render();
-      }
+      case 'char':
+        if (key.value) composer.insert(key.value);
+        break;
+      case 'backspace':
+        composer.backspace();
+        break;
+      case 'deleteForward':
+        composer.deleteForward();
+        break;
+      case 'left':
+        composer.moveLeft();
+        break;
+      case 'right':
+        composer.moveRight();
+        break;
+      case 'home':
+        composer.moveToStart();
+        break;
+      case 'end':
+        composer.moveToEnd();
+        break;
+      case 'up':
+        composer.historyUp();
+        break;
+      case 'down':
+        composer.historyDown();
+        break;
+      case 'enter':
+        composer.submit();
+        break;
+      case 'escape':
+        composer.cancel();
+        break;
+      default:
+        break;
     }
+    render();
   }
 
   function onResize(): void {
@@ -182,7 +303,6 @@ export async function launchTui(options: TuiOptions): Promise<void> {
 
   stdin.setRawMode(true);
   stdin.resume();
-  stdin.setEncoding('utf8');
 
   stdout.write(seq.altOn + seq.cursorHide + seq.clear);
 
