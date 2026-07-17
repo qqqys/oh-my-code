@@ -29,6 +29,14 @@ import {
   type BlockKind,
 } from './blocks.js';
 import { runCommand } from './command.js';
+import {
+  autoCompact,
+  compactTranscript,
+  DEFAULT_CONTEXT_LIMIT,
+  estimateContextTokens,
+  isCompacted,
+  shouldCompact,
+} from './compact.js';
 import { ComposerState, type CommandOutcome, type EditOutcome, type TranscriptMessage } from './composer.js';
 import { loadConfig, redact, type ModelConfig } from './config.js';
 import { discoverContext } from './context.js';
@@ -747,6 +755,10 @@ export async function launchTui(options: TuiOptions): Promise<void> {
   const agentTouchedFiles = new Set<string>();
   const approvalTimeoutMs = parseTimeoutEnv(process.env['OMC_APPROVAL_TIMEOUT_MS'], 30_000);
   const commandTimeoutMs = parseTimeoutEnv(process.env['OMC_COMMAND_TIMEOUT_MS'], 120_000);
+  // Context budget (in ≈ char/4 tokens) that governs when compaction is offered
+  // and auto-applied. Configurable so a session can be tuned or exercised at a
+  // small scale in tests.
+  const contextLimit = parseTimeoutEnv(process.env['OMC_CONTEXT_LIMIT'], DEFAULT_CONTEXT_LIMIT);
   let pendingApproval:
     | {
         request: ApprovalRequest;
@@ -1132,6 +1144,15 @@ export async function launchTui(options: TuiOptions): Promise<void> {
     connection = 'connecting';
     render();
 
+    // Compact predictably before the context limit is reached: once the live
+    // transcript crosses the budget, replace it with the structured summary so
+    // this turn (and every later turn) sends a bounded context to the model.
+    // The pending user message is kept in the recent tail, so this turn still runs.
+    const auto = autoCompact(composer.messages, contextLimit);
+    if (auto.compacted) {
+      applyCompaction(auto.messages);
+    }
+
     abortController = new AbortController();
     const chatMessages: ChatMessage[] = [];
     for (const m of composer.messages) {
@@ -1276,8 +1297,13 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       runPolicyCommand(args);
     } else if (command === '/handoff') {
       runHandoffCommand(args);
+    } else if (command === '/compact') {
+      runCompactCommand(args);
     } else {
-      pushModelNotice(`Unknown command: ${command}. Available: /model, /policy, /handoff.`, text);
+      pushModelNotice(
+        `Unknown command: ${command}. Available: /model, /policy, /handoff, /compact.`,
+        text,
+      );
     }
     return true;
   }
@@ -1292,6 +1318,10 @@ export async function launchTui(options: TuiOptions): Promise<void> {
 
   function pushHandoffNotice(output: string, args: string): void {
     composer.messages.push({ role: 'tool', text: output, toolName: 'handoff', toolArgs: args, truncated: false });
+  }
+
+  function pushCompactNotice(output: string, args: string): void {
+    composer.messages.push({ role: 'tool', text: output, toolName: 'compact', toolArgs: args, truncated: false });
   }
 
   function runHandoffCommand(args: string): void {
@@ -1376,6 +1406,62 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       `Git handoff: committed ${files.length} agent-owned file(s).\n${committed.output}`,
       'commit',
     );
+  }
+
+  // Compact the live transcript into a structured summary plus a short tail of
+  // recent messages. The summary is derived from the structured transcript
+  // fields (never from generated prose), so tool side effects and approval
+  // outcomes are reported exactly as they happened. The operator confirms by
+  // running /compact; auto-compaction before a turn uses the same path.
+  function runCompactCommand(args: string): void {
+    const sub = args.trim().toLowerCase();
+    if (sub === 'status') {
+      const tokens = estimateContextTokens(composer.messages);
+      const state = isCompacted(composer.messages) ? ' (already compacted)' : '';
+      const hint = shouldCompact(composer.messages, contextLimit)
+        ? 'Run /compact to condense it.'
+        : `Compaction triggers at ~${contextLimit} tokens.`;
+      pushCompactNotice(
+        `Context: ~${tokens} tokens across ${composer.messages.length} message(s)${state}. ${hint}`,
+        'status',
+      );
+      return;
+    }
+    if (sub === '' || sub === 'now') {
+      if (isCompacted(composer.messages) && !shouldCompact(composer.messages, contextLimit)) {
+        pushCompactNotice('Transcript is already compacted; nothing to do.', sub);
+        return;
+      }
+      const result = compactTranscript(composer.messages, contextLimit);
+      applyCompaction(result.messages);
+      pushCompactNotice(
+        [
+          `Compacted ${result.before} → ~${result.after} tokens.`,
+          'The summary below preserves intent, changed files, commands, approvals, and pending actions.',
+          '',
+          result.summary,
+        ].join('\n'),
+        sub,
+      );
+      return;
+    }
+    pushCompactNotice(
+      [
+        'Compaction commands:',
+        '  /compact           summarize the transcript and keep only the recent tail',
+        '  /compact status    show the current context size and the trigger threshold',
+      ].join('\n'),
+      'help',
+    );
+  }
+
+  // Replace the live transcript with a compacted one and reset block-navigation
+  // state (indices shift), then persist so a resumed session loads the summary.
+  function applyCompaction(messages: readonly TranscriptMessage[]): void {
+    composer.messages.splice(0, composer.messages.length, ...messages);
+    collapsed.clear();
+    selectedBlock = -1;
+    persist();
   }
 
   function runPolicyCommand(args: string): void {
