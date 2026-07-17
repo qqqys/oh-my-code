@@ -77,8 +77,33 @@ function extractCommand(text: string): string | null {
   return command !== undefined && command.length > 0 ? command : null;
 }
 
+// Parse "edit <path> :: <old> :: <new>" into a scoped edit. The "::" delimiter
+// keeps the three fields unambiguous on a single submitted line.
+function extractEdit(
+  text: string,
+): { path: string; oldString: string; newString: string } | null {
+  const match = text.match(/\bedit\b\s+(.+)$/i);
+  const body = match?.[1]?.trim();
+  if (body === undefined || body.length === 0) return null;
+  const parts = body.split('::').map((part) => part.trim());
+  if (parts.length !== 3) return null;
+  const [path, oldString, newString] = parts;
+  if (path === undefined || oldString === undefined || newString === undefined) return null;
+  if (path.length === 0) return null;
+  return { path, oldString, newString };
+}
+
 function detectToolIntent(text: string): ToolCall | null {
   const lower = text.toLowerCase();
+  if (/\bedit\b/.test(lower)) {
+    const edit = extractEdit(text);
+    if (edit !== null) {
+      return {
+        name: 'apply_edit',
+        args: { path: edit.path, old_string: edit.oldString, new_string: edit.newString },
+      };
+    }
+  }
   if (/\blist\b/.test(lower)) {
     return { name: 'list_files', args: { path: extractAfter(text, 'in') ?? '.' } };
   }
@@ -136,7 +161,12 @@ class TestProvider implements Provider {
         yield { type: 'error', error: 'cancelled', recoverable: false };
         return;
       }
-      const verb = intent.name === 'run_command' ? 'ran' : 'inspected the repository with';
+      const verb =
+        intent.name === 'run_command'
+          ? 'ran'
+          : intent.name === 'apply_edit'
+            ? 'proposed an edit with'
+            : 'inspected the repository with';
       const response =
         result?.error !== undefined && result.error !== null
           ? `The ${intent.name} tool could not complete: ${result.error}`

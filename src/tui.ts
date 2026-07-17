@@ -11,8 +11,16 @@ import {
   type Risk,
 } from './approval.js';
 import { runCommand } from './command.js';
-import { ComposerState, type CommandOutcome, type TranscriptMessage } from './composer.js';
+import { ComposerState, type CommandOutcome, type EditOutcome, type TranscriptMessage } from './composer.js';
 import { loadConfig, redact, type ModelConfig } from './config.js';
+import {
+  commitEdit,
+  prepareEdit,
+  revertEdit,
+  type DiffLine,
+  type EditOperation,
+  type EditPrepared,
+} from './edit.js';
 import { createProvider, type ChatMessage, type Provider, type Usage } from './provider.js';
 import { executeTool, type ToolCall, type ToolResult } from './tools.js';
 
@@ -67,6 +75,7 @@ export interface StatusInfo {
   usage: UsageInfo;
   canRetry: boolean;
   canRegenerate: boolean;
+  canUndo: boolean;
 }
 
 export interface ApprovalCardInfo {
@@ -75,6 +84,13 @@ export interface ApprovalCardInfo {
   risk: Risk;
   scope: string;
   countdown: number;
+}
+
+export interface EditCardInfo {
+  path: string;
+  diff: readonly DiffLine[];
+  added: number;
+  removed: number;
 }
 
 function stripAnsi(text: string): string {
@@ -157,6 +173,9 @@ function actionHints(status: StatusInfo): string {
   if (status.canRegenerate) {
     hints.splice(status.canRetry ? 3 : 2, 0, 'Ctrl+G regen');
   }
+  if (status.canUndo) {
+    hints.splice(hints.length - 1, 0, 'Ctrl+U undo');
+  }
   return hints.join('  ·  ');
 }
 
@@ -183,6 +202,28 @@ function renderApprovalCard(info: ApprovalCardInfo): string[] {
   ];
 }
 
+// The proposed-edit card shows a tight diff (removed lines red, added lines
+// green) so the user can review exactly what will change before accepting.
+function renderEditCard(info: EditCardInfo): string[] {
+  const lines: string[] = [
+    `  ${fg.cyan(fg.bold('✎ Edit proposed'))}`,
+    `  File:  ${info.path}`,
+    '',
+  ];
+  for (const line of info.diff) {
+    if (line.kind === 'add') {
+      lines.push(`  ${fg.green('+ ' + line.text)}`);
+    } else if (line.kind === 'del') {
+      lines.push(`  ${fg.red('- ' + line.text)}`);
+    } else {
+      lines.push(`  ${fg.dim('  ' + line.text)}`);
+    }
+  }
+  lines.push('');
+  lines.push(`  ${fg.green('+' + info.added)}  ${fg.red('-' + info.removed)}`);
+  return lines;
+}
+
 // Each command outcome renders with a distinct label and color so denial,
 // timeout, cancellation, and non-zero exit are visually unambiguous.
 function commandHeader(outcome: CommandOutcome, args: string, truncated: boolean): string {
@@ -201,6 +242,21 @@ function commandHeader(outcome: CommandOutcome, args: string, truncated: boolean
   }
 }
 
+// Each edit outcome renders distinctly so applied, rejected, reverted, and
+// conflict states are visually unambiguous in the transcript.
+function editHeader(outcome: EditOutcome, args: string): string {
+  switch (outcome) {
+    case 'applied':
+      return `${fg.green(fg.bold('Edit applied'))} ${fg.green(args)}`;
+    case 'rejected':
+      return `${fg.red(fg.bold('Edit rejected'))} ${fg.red(args)}`;
+    case 'reverted':
+      return `${fg.blue(fg.bold('Edit reverted'))} ${fg.blue(args)}`;
+    case 'conflict':
+      return `${fg.yellow(fg.bold('Edit conflict'))} ${fg.yellow(args)}`;
+  }
+}
+
 export function renderScreen(
   width: number,
   height: number,
@@ -216,8 +272,10 @@ export function renderScreen(
     usage: { turns: 0, promptTokens: 0, completionTokens: 0 },
     canRetry: false,
     canRegenerate: false,
+    canUndo: false,
   },
   approval: ApprovalCardInfo | null = null,
+  edit: EditCardInfo | null = null,
 ): string {
   const header: string[] = [];
 
@@ -253,7 +311,9 @@ export function renderScreen(
     for (const message of messages) {
       if (message.role === 'tool') {
         const args = message.toolArgs ? `(${message.toolArgs})` : '';
-        if (message.toolName === 'run_command') {
+        if (message.toolName === 'apply_edit') {
+          body.push(`  ${editHeader(message.editOutcome ?? 'applied', args)}`);
+        } else if (message.toolName === 'run_command') {
           body.push(`  ${commandHeader(message.outcome ?? 'ok', args, message.truncated === true)}`);
         } else {
           const suffix = message.truncated ? ` ${fg.yellow('[truncated]')}` : '';
@@ -299,17 +359,27 @@ export function renderScreen(
           ...renderApprovalCard(approval),
           '',
         ]
-      : [
-          '',
-          `  ${fg.gray('─ Composer ' + '─'.repeat(Math.max(0, width - 14)))}`,
-          '',
-          renderComposerLine(composerInput, composerCursor, '❯'),
-          '',
-        ];
+      : edit !== null
+        ? [
+            '',
+            `  ${fg.gray('─ Edit ' + '─'.repeat(Math.max(0, width - 10)))}`,
+            '',
+            ...renderEditCard(edit),
+            '',
+          ]
+        : [
+            '',
+            `  ${fg.gray('─ Composer ' + '─'.repeat(Math.max(0, width - 14)))}`,
+            '',
+            renderComposerLine(composerInput, composerCursor, '❯'),
+            '',
+          ];
   const footerHints =
     approval !== null
       ? 'y allow once  ·  a always  ·  n deny  ·  Esc cancel  ·  Ctrl+C exit'
-      : actionHints(status);
+      : edit !== null
+        ? 'y accept  ·  n reject  ·  Esc cancel  ·  Ctrl+C exit'
+        : actionHints(status);
   const footer: string[] = [
     center(usageLabel(status.usage), width),
     center(fg.dim(footerHints), width),
@@ -358,6 +428,7 @@ const KEY = {
   ctrlD: 0x04,
   ctrlG: 0x07,
   ctrlR: 0x12,
+  ctrlU: 0x15,
 } as const;
 
 function parseKey(data: Buffer): { type: string; value?: string } {
@@ -371,6 +442,7 @@ function parseKey(data: Buffer): { type: string; value?: string } {
     if (first === KEY.ctrlC || first === KEY.ctrlD) return { type: 'exit' };
     if (first === KEY.ctrlR) return { type: 'retry' };
     if (first === KEY.ctrlG) return { type: 'regenerate' };
+    if (first === KEY.ctrlU) return { type: 'undo' };
     if (first >= 0x20) return { type: 'char', value: data.toString('utf8') };
     return { type: 'unknown' };
   }
@@ -444,6 +516,15 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       }
     | null = null;
   let approvalCountdown = 0;
+  let pendingEdit:
+    | {
+        prepared: EditPrepared;
+        resolve: (decision: 'accept' | 'reject') => void;
+      }
+    | null = null;
+  // The most recently applied edit, kept so Ctrl+U can revert exactly that
+  // operation and nothing else. Cleared once reverted or replaced.
+  let lastEdit: EditOperation | null = null;
 
   function lastMessage(): TranscriptMessage | undefined {
     return composer.messages[composer.messages.length - 1];
@@ -457,6 +538,10 @@ export async function launchTui(options: TuiOptions): Promise<void> {
     return !streaming && lastMessage()?.role === 'assistant';
   }
 
+  function canUndo(): boolean {
+    return !streaming && pendingEdit === null && lastEdit !== null;
+  }
+
   function buildStatus(): StatusInfo {
     return {
       model: redact(config),
@@ -466,6 +551,7 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       usage,
       canRetry: canRetry(),
       canRegenerate: canRegenerate(),
+      canUndo: canUndo(),
     };
   }
 
@@ -496,6 +582,7 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       composer.cursorPosition,
       buildStatus(),
       approvalCard(),
+      editCard(),
     );
     stdout.write(seq.home + screen);
   }
@@ -631,6 +718,97 @@ export async function launchTui(options: TuiOptions): Promise<void> {
     return { name: 'run_command', output: exec.output, truncated: exec.truncated, error };
   }
 
+  function editCard(): EditCardInfo | null {
+    if (pendingEdit === null) return null;
+    const { prepared } = pendingEdit;
+    return {
+      path: prepared.operation.relativePath,
+      diff: prepared.diff,
+      added: prepared.added,
+      removed: prepared.removed,
+    };
+  }
+
+  // Pause for an accept/reject decision on a proposed edit. No write happens
+  // until this resolves, so the file is untouched while the diff is under review.
+  function requestEditDecision(prepared: EditPrepared): Promise<'accept' | 'reject'> {
+    return new Promise<'accept' | 'reject'>((resolve) => {
+      pendingEdit = { prepared, resolve };
+      render();
+    });
+  }
+
+  function resolveEdit(decision: 'accept' | 'reject'): void {
+    const pending = pendingEdit;
+    if (pending === null) return;
+    pendingEdit = null;
+    render();
+    pending.resolve(decision);
+  }
+
+  function pushEditMessage(outcome: EditOutcome, argsLabel: string, text: string): void {
+    composer.messages.push({
+      role: 'tool',
+      text,
+      toolName: 'apply_edit',
+      toolArgs: argsLabel,
+      editOutcome: outcome,
+    });
+  }
+
+  async function handleEdit(call: ToolCall): Promise<ToolResult> {
+    const pathArg = (call.args.path ?? '').trim();
+    const argsLabel = `path: ${pathArg.length > 0 ? pathArg : '(none)'}`;
+    if (pathArg.length === 0) {
+      pushEditMessage('conflict', argsLabel, 'No path provided.');
+      return { name: 'apply_edit', output: '', truncated: false, error: 'No path provided.' };
+    }
+    const prepared = prepareEdit(
+      {
+        path: pathArg,
+        oldString: call.args.old_string ?? '',
+        newString: call.args.new_string ?? '',
+      },
+      workspace,
+    );
+    if ('status' in prepared) {
+      pushEditMessage('conflict', argsLabel, prepared.error);
+      return { name: 'apply_edit', output: '', truncated: false, error: prepared.error };
+    }
+
+    const decision = await requestEditDecision(prepared);
+    if (decision === 'reject') {
+      pushEditMessage('rejected', argsLabel, 'Rejected by user; file unchanged.');
+      return { name: 'apply_edit', output: '', truncated: false, error: 'Edit rejected by user.' };
+    }
+
+    const committed = commitEdit(prepared.operation);
+    if (committed.status === 'applied') {
+      lastEdit = committed.operation;
+      const summary = `Applied edit to ${committed.operation.relativePath}.`;
+      pushEditMessage('applied', argsLabel, summary);
+      return { name: 'apply_edit', output: summary, truncated: false, error: null };
+    }
+    pushEditMessage('conflict', argsLabel, committed.error);
+    return { name: 'apply_edit', output: '', truncated: false, error: committed.error };
+  }
+
+  // Revert only the most recent applied edit. revertEdit reverses that single
+  // substitution and fails closed if the file changed, so unrelated work stays intact.
+  function revertLastEdit(): void {
+    if (lastEdit === null) return;
+    const target = lastEdit;
+    const argsLabel = `path: ${target.relativePath}`;
+    const result = revertEdit(target);
+    if (result.status === 'reverted') {
+      lastEdit = null;
+      pushEditMessage('reverted', argsLabel, `Reverted edit to ${target.relativePath}.`);
+    } else {
+      pushEditMessage('conflict', argsLabel, result.error);
+    }
+    render();
+  }
+
   async function streamResponse(): Promise<void> {
     if (streaming) return;
     const last = lastMessage();
@@ -669,6 +847,8 @@ export async function launchTui(options: TuiOptions): Promise<void> {
             connection = 'streaming';
             if (value.call.name === 'run_command') {
               toolInput = await handleCommand(value.call);
+            } else if (value.call.name === 'apply_edit') {
+              toolInput = await handleEdit(value.call);
             } else {
               const result = executeTool(value.call, workspace);
               const argParts = Object.entries(value.call.args).map(([k, v]) => `${k}: ${v}`);
@@ -757,6 +937,23 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       }
       return;
     }
+    if (pendingEdit !== null) {
+      const editKey = parseKey(data);
+      if (editKey.type === 'exit') {
+        exit();
+        return;
+      }
+      if (editKey.type === 'escape') {
+        resolveEdit('reject');
+        return;
+      }
+      if (editKey.type === 'char' && editKey.value !== undefined) {
+        const choice = editKey.value.toLowerCase();
+        if (choice === 'y') return resolveEdit('accept');
+        if (choice === 'n') return resolveEdit('reject');
+      }
+      return;
+    }
     const key = parseKey(data);
     switch (key.type) {
       case 'exit':
@@ -801,6 +998,9 @@ export async function launchTui(options: TuiOptions): Promise<void> {
         return;
       case 'regenerate':
         regenerate();
+        return;
+      case 'undo':
+        revertLastEdit();
         return;
       case 'escape':
         if (streaming && abortController) {

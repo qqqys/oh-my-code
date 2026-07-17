@@ -167,6 +167,22 @@ describe('TestProvider tool use', () => {
     }
   });
 
+  it('yields an apply_edit tool call for an edit request', async () => {
+    const config = loadConfig({});
+    const provider = createProvider(config);
+    const gen = provider.stream([
+      { role: 'user', text: 'edit src/app.ts :: const a = 1 :: const a = 2' },
+    ]);
+    const first = await gen.next();
+    expect(first.value?.type).toBe('tool_call');
+    if (first.value?.type === 'tool_call') {
+      expect(first.value.call.name).toBe('apply_edit');
+      expect(first.value.call.args.path).toBe('src/app.ts');
+      expect(first.value.call.args.old_string).toBe('const a = 1');
+      expect(first.value.call.args.new_string).toBe('const a = 2');
+    }
+  });
+
   it('streams a summary response after receiving a tool result', async () => {
     const config = loadConfig({});
     const provider = createProvider(config);
