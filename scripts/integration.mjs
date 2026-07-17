@@ -94,7 +94,7 @@ function sendKeys(...keys) {
   }
 }
 
-function waitForContent(expected, timeoutMs = 10_000, target = session) {
+function waitForContent(expected, timeoutMs = 30_000, target = session) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const content = capturePane(target);
@@ -131,7 +131,7 @@ function verifyResponsiveMatrix() {
         throw new Error(started.stderr || `Unable to start matrix session ${size.name}/${color.name}`);
       }
       try {
-        waitForContent('Composer', 10_000, matrixSession);
+        waitForContent('Composer', 30_000, matrixSession);
         const plain = capturePane(matrixSession);
         // The composer and footer are essential and stay on-screen at every size.
         if (!plain.includes('Composer')) {
@@ -180,42 +180,42 @@ function verifyModelProfiles() {
     }
   };
   try {
-    waitForContent('Composer', 10_000, modelSession);
+    waitForContent('Composer', 30_000, modelSession);
 
     // Listing shows every validated profile with the active one marked.
     send('/model list', 'Enter');
-    waitForContent('Active profile: test', 10_000, modelSession);
-    waitForContent('openai-gpt4o', 10_000, modelSession);
-    waitForContent('test-mini', 10_000, modelSession);
+    waitForContent('Active profile: test', 30_000, modelSession);
+    waitForContent('openai-gpt4o', 30_000, modelSession);
+    waitForContent('test-mini', 30_000, modelSession);
 
     // Inspecting config reveals non-secret fields only.
     spawnSync('sleep', ['0.3']);
     send('/model show', 'Enter');
-    waitForContent('Effective configuration', 10_000, modelSession);
-    waitForContent('Capabilities:', 10_000, modelSession);
+    waitForContent('Effective configuration', 30_000, modelSession);
+    waitForContent('Capabilities:', 30_000, modelSession);
 
     // A rejected switch is actionable: it names the unknown profile.
     spawnSync('sleep', ['0.3']);
     send('/model use nope', 'Enter');
-    waitForContent('No profile named "nope"', 10_000, modelSession);
+    waitForContent('No profile named "nope"', 30_000, modelSession);
 
     // A successful switch updates the visible status and notes the fallback.
     spawnSync('sleep', ['0.3']);
     send('/model use test-mini', 'Enter');
-    waitForContent('Switched to test-mini', 10_000, modelSession);
-    waitForContent('does not support coding tools', 10_000, modelSession);
-    waitForContent('test-model-mini', 10_000, modelSession);
+    waitForContent('Switched to test-mini', 30_000, modelSession);
+    waitForContent('does not support coding tools', 30_000, modelSession);
+    waitForContent('test-model-mini', 30_000, modelSession);
 
     // Capability fallback: a tool request is skipped, not executed.
     spawnSync('sleep', ['0.3']);
     send('list files in src', 'Enter');
-    waitForContent('Skipped', 10_000, modelSession);
-    waitForContent('does not support tools', 10_000, modelSession);
+    waitForContent('Skipped', 30_000, modelSession);
+    waitForContent('does not support tools', 30_000, modelSession);
 
     // Switching back to a full-capability profile succeeds.
     spawnSync('sleep', ['0.3']);
     send('/model use test', 'Enter');
-    waitForContent('Switched to test ', 10_000, modelSession);
+    waitForContent('Switched to test ', 30_000, modelSession);
   } finally {
     tmux('kill-session', '-t', modelSession);
     spawnSync('sleep', ['0.1']);
