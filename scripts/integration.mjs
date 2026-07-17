@@ -103,7 +103,7 @@ try {
   // full multi-turn transcript so the final capture shows every tool in action;
   // a shorter pane would scroll the earlier turns off-screen.
   const launchCmd = `env OMC_PROVIDER=test OMC_APPROVAL_TIMEOUT_MS=2000 ${JSON.stringify(nodeBin)} ${JSON.stringify(cli)}`;
-  const started = tmux('new-session', '-d', '-x', '120', '-y', '200', '-s', session, launchCmd);
+  const started = tmux('new-session', '-d', '-x', '120', '-y', '260', '-s', session, launchCmd);
   if (started.status !== 0) {
     throw new Error(started.stderr || 'Unable to start tmux integration session');
   }
@@ -234,10 +234,46 @@ try {
     throw new Error('repo_context modified untracked work');
   }
 
-  // Verify usage reflects all nine completed turns (footer stays pinned on-screen)
-  const finalScreen = waitForContent('turns: 9');
+  // === Turn 10: a complete coding loop whose verification passes ===
+  // The fixture file is back to its original content after the turn-8 revert.
+  spawnSync('sleep', ['0.3']);
+  sendKeys('complete omc-e2e-fixture.txt :: beta :: BETA :: grep BETA omc-e2e-fixture.txt', 'Enter');
+  // The loop inspects the target file, then proposes the scoped edit.
+  waitForContent('read_file');
+  waitForContent('Edit proposed');
+  sendKeys('y');
+  waitForContent('Edit applied');
+  // Focused verification runs through the approval boundary and passes.
+  waitForContent('Approval required');
+  sendKeys('y');
+  waitForContent('Coding loop complete');
+  waitForContent('Changes:');
+  waitForContent('Tests:');
+  waitForContent('Next (user-owned):');
+  waitForContent('ready');
+  if (!readFileSync(fixturePath, 'utf8').includes('BETA')) {
+    throw new Error('Loop edit was not written to disk');
+  }
 
-  // The command and edit paths must each be visible in the transcript.
+  // === Turn 11: a complete coding loop whose verification fails (blocked) ===
+  spawnSync('sleep', ['0.3']);
+  sendKeys('complete omc-e2e-fixture.txt :: gamma :: GAMMA :: grep MISSING omc-e2e-fixture.txt', 'Enter');
+  waitForContent('read_file');
+  waitForContent('Edit proposed');
+  sendKeys('y');
+  waitForContent('Edit applied');
+  waitForContent('Approval required');
+  sendKeys('y');
+  // Verification finds no match, so the loop reports a clear blocked result
+  // instead of claiming success.
+  waitForContent('Coding loop blocked');
+  waitForContent('Remaining risks:');
+  waitForContent('ready');
+
+  // Verify usage reflects all eleven completed turns (footer stays pinned on-screen)
+  const finalScreen = waitForContent('turns: 11');
+
+  // The command, edit, and coding-loop paths must each be visible in the transcript.
   for (const token of [
     'hello-allow',
     'Command denied',
@@ -245,6 +281,8 @@ try {
     'Edit applied',
     'Edit rejected',
     'Edit reverted',
+    'Coding loop complete',
+    'Coding loop blocked',
   ]) {
     if (!finalScreen.includes(token)) {
       throw new Error(`Expected ${token} in final transcript`);

@@ -240,6 +240,102 @@ describe('TestProvider tool use', () => {
   });
 });
 
+describe('Coding loop', () => {
+  function toolResult(call: ToolCall, output: string, error: string | null): ToolResult {
+    return { name: call.name, output, truncated: false, error };
+  }
+
+  function toolNames(events: readonly StreamEvent[]): string[] {
+    const names: string[] = [];
+    for (const event of events) {
+      if (event.type === 'tool_call') names.push(event.call.name);
+    }
+    return names;
+  }
+
+  function streamedText(events: readonly StreamEvent[]): string {
+    return events
+      .filter((e) => e.type === 'delta')
+      .map((e) => (e.type === 'delta' ? e.text : ''))
+      .join('');
+  }
+
+  it('inspects, edits, verifies, and summarizes a passing loop', async () => {
+    const config = loadConfig({});
+    const provider = createProvider(config);
+    const gen = provider.stream([
+      { role: 'user', text: 'complete src/app.ts :: const a = 1 :: const a = 2 :: grep done src/app.ts' },
+    ]);
+    const events = await drive(gen, (call) => toolResult(call, 'ok', null));
+
+    expect(toolNames(events)).toEqual(['read_file', 'apply_edit', 'run_command']);
+    const text = streamedText(events);
+    expect(text).toContain('Coding loop complete.');
+    expect(text).toContain('Changes:');
+    expect(text).toContain('Tests:');
+    expect(text).toContain('Remaining risks:');
+    expect(text).toContain('Next (user-owned):');
+    expect(text).toContain('passed');
+    expect(events.find((e) => e.type === 'done')).toBeDefined();
+  });
+
+  it('reports a blocked result when verification fails with no retry', async () => {
+    const config = loadConfig({});
+    const provider = createProvider(config);
+    const gen = provider.stream([
+      { role: 'user', text: 'complete src/app.ts :: const a = 1 :: const a = 2 :: grep nope src/app.ts' },
+    ]);
+    const events = await drive(gen, (call) =>
+      call.name === 'run_command' ? toolResult(call, '', 'exit 1') : toolResult(call, 'ok', null),
+    );
+
+    expect(toolNames(events)).toEqual(['read_file', 'apply_edit', 'run_command']);
+    const text = streamedText(events);
+    expect(text).toContain('Coding loop blocked.');
+    expect(text).toContain('failed (exit 1)');
+    expect(text).toContain('Next (user-owned):');
+  });
+
+  it('makes one bounded retry attempt that turns failure into success', async () => {
+    const config = loadConfig({});
+    const provider = createProvider(config);
+    const gen = provider.stream([
+      { role: 'user', text: 'complete src/app.ts :: a :: b :: grep b src/app.ts :: b :: bb' },
+    ]);
+    let verifyCalls = 0;
+    const events = await drive(gen, (call) => {
+      if (call.name === 'run_command') {
+        verifyCalls += 1;
+        return verifyCalls === 1 ? toolResult(call, '', 'exit 1') : toolResult(call, 'ok', null);
+      }
+      return toolResult(call, 'ok', null);
+    });
+
+    expect(toolNames(events)).toEqual(['read_file', 'apply_edit', 'run_command', 'apply_edit', 'run_command']);
+    expect(verifyCalls).toBe(2);
+    const text = streamedText(events);
+    expect(text).toContain('Coding loop complete.');
+    expect(text).toContain('bounded retry');
+  });
+
+  it('blocks without running tests when the edit is rejected', async () => {
+    const config = loadConfig({});
+    const provider = createProvider(config);
+    const gen = provider.stream([
+      { role: 'user', text: 'complete src/app.ts :: a :: b :: grep b src/app.ts' },
+    ]);
+    const events = await drive(gen, (call) =>
+      call.name === 'apply_edit' ? toolResult(call, '', 'Edit rejected by user.') : toolResult(call, 'ok', null),
+    );
+
+    expect(toolNames(events)).toEqual(['read_file', 'apply_edit']);
+    const text = streamedText(events);
+    expect(text).toContain('Coding loop blocked.');
+    expect(text).toContain('No change applied');
+    expect(text).toContain('Not run');
+  });
+});
+
 describe('UnconfiguredProvider', () => {
   it('yields a redacted non-recoverable configuration error', async () => {
     const config = loadConfig({ OMC_PROVIDER: 'openai' });
