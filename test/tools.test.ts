@@ -135,6 +135,33 @@ describe('search_content', () => {
   });
 });
 
+describe('repo_context', () => {
+  it('summarizes instructions, packages, and test commands from real files', () => {
+    writeFileSync(join(workspace, 'AGENTS.md'), '# guidance\n');
+    writeFileSync(
+      join(workspace, 'package.json'),
+      JSON.stringify({ name: 'demo', scripts: { test: 'vitest run' } }),
+    );
+    writeFileSync(join(workspace, 'Makefile'), 'unit:\n\tvitest run\n');
+    const result = executeTool({ name: 'repo_context', args: { path: '.' } }, workspace);
+    expect(result.error).toBeNull();
+    expect(result.output).toContain('AGENTS.md  (scope: .)');
+    expect(result.output).toContain('demo');
+    expect(result.output).toContain('make unit');
+    expect(result.output).toContain('npm test');
+  });
+
+  it('rejects paths that escape the workspace', () => {
+    const result = executeTool({ name: 'repo_context', args: { path: '../../etc' } }, workspace);
+    expect(result.error).toContain('escapes the workspace');
+  });
+
+  it('rejects protected directories', () => {
+    const result = executeTool({ name: 'repo_context', args: { path: 'node_modules' } }, workspace);
+    expect(result.error).toContain('protected');
+  });
+});
+
 describe('executeTool', () => {
   it('returns an error for unknown tools', () => {
     const result = executeTool({ name: 'delete_everything', args: {} }, workspace);
