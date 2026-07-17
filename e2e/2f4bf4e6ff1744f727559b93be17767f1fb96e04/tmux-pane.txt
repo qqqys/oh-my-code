@@ -1,0 +1,75 @@
+                                  ___  _   _     __  __            ____          _
+                                 / _ \| | | |   |  \/  | ___   _  / ___|___   __| | ___
+                                | | | | |_| |   | |\/| |/ _ \ | | |   / _ \ / _` |/ _ \
+                                | |_| |  _  |   | |  | | (_) || | |__| (_) | (_| |  __/
+                                \___/|_| |_|   |_|  |_|\___/ |_|  \____\___/ \__,_|\___|
+                                                         v0.0.0
+
+  ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │   Status                                                                                                       │
+  │                                                                                                                │
+  │   Model:      test:test-model (no key)                                                                         │
+  │   Connection: ready                                                                                            │
+  │   Repository: none                                                                                             │
+  └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  ─ Transcript ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+                                                          ...
+  }
+
+
+  Assistant
+  I inspected the repository with read_file. The results are shown above.
+
+  You
+  search for launchTui
+
+  Tool search_content(pattern: launchTui, path: .)
+  scripts/integration.mjs:89: sendKeys('search for launchTui', 'Enter');
+  src/cli.ts:12: import { launchTui } from './tui.js';
+  src/cli.ts:17: await launchTui({ version: VERSION });
+  src/tui.ts:419: export async function launchTui(options: TuiOptions): Promise<void> {
+  test/tools.test.ts:114: 'list_files read_file search_content launchTui\n',
+  test/tools.test.ts:116: const result = executeTool({ name: 'search_content', args: { pattern: 'launchTui', path: '
+  .' } }, workspace);
+  test/tools.test.ts:119: expect(result.output).not.toContain('launchTui');
+
+  Assistant
+  I inspected the repository with search_content. The results are shown above.
+
+  You
+  run echo hello-allow
+
+  Command (command: echo hello-allow)
+  hello-allow
+
+
+  Assistant
+  I ran run_command. The results are shown above.
+
+  You
+  run echo hello-deny
+
+  Command denied (command: echo hello-deny)
+  Denied by user.
+
+  Assistant
+  The run_command tool could not complete: Denied by user.
+
+  You
+  run echo hello-timeout
+
+  Command timed out (command: echo hello-timeout)
+  Approval window expired; command not run.
+
+  Assistant
+  The run_command tool could not complete: Approval window expired; command not run.
+
+
+  ─ Composer ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  ❯
+
+                                                turns: 6  ·  tokens: 430
+                       Enter send  ·  ↑↓ history  ·  Ctrl+G regen  ·  Esc cancel  ·  Ctrl+C exit
