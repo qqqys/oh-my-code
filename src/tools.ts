@@ -27,6 +27,7 @@ const PROTECTED_DIRS = new Set([
   '.autonomy',
   'dist',
   'coverage',
+  'artifacts',
 ]);
 
 const SECRET_PATTERNS = [

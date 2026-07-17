@@ -45,6 +45,11 @@ describe('list_files', () => {
     const result = executeTool({ name: 'list_files', args: { path: 'node_modules' } }, workspace);
     expect(result.error).toContain('protected');
   });
+
+  it('rejects generated output directories', () => {
+    const result = executeTool({ name: 'list_files', args: { path: 'artifacts' } }, workspace);
+    expect(result.error).toContain('protected');
+  });
 });
 
 describe('read_file', () => {
@@ -96,6 +101,22 @@ describe('search_content', () => {
   it('skips protected directories', () => {
     const result = executeTool({ name: 'search_content', args: { pattern: 'module.exports', path: '.' } }, workspace);
     expect(result.output).not.toContain('node_modules');
+  });
+
+  it('skips generated evidence under artifacts', () => {
+    // Regression: the e2e transcript written to artifacts/e2e records tool
+    // names and search terms. If search_content traversed artifacts, a later
+    // run would match its own prior evidence, bloating the transcript until
+    // earlier turns scrolled out of the rendered pane.
+    mkdirSync(join(workspace, 'artifacts', 'e2e'), { recursive: true });
+    writeFileSync(
+      join(workspace, 'artifacts', 'e2e', 'oh-my-code.tmux.txt'),
+      'list_files read_file search_content launchTui\n',
+    );
+    const result = executeTool({ name: 'search_content', args: { pattern: 'launchTui', path: '.' } }, workspace);
+    expect(result.error).toBeNull();
+    expect(result.output).not.toContain('artifacts');
+    expect(result.output).not.toContain('launchTui');
   });
 
   it('skips secret files', () => {
