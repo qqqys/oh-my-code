@@ -56,6 +56,13 @@ describe('TUI screen rendering', () => {
     expect(screen).toContain('streaming');
   });
 
+  it('shows the repository label from status', () => {
+    const status: StatusInfo = { ...defaultStatus, repository: 'main · 3 pkg' };
+    const screen = stripAnsi(renderScreen(80, 30, '0.0.0', [], '', 0, status));
+    expect(screen).toContain('Repository:');
+    expect(screen).toContain('main · 3 pkg');
+  });
+
   it('shows usage in the footer', () => {
     const status: StatusInfo = {
       ...defaultStatus,

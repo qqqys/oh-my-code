@@ -183,6 +183,20 @@ describe('TestProvider tool use', () => {
     }
   });
 
+  it('yields a repo_context tool call for a context request', async () => {
+    const config = loadConfig({});
+    const provider = createProvider(config);
+    const gen = provider.stream([
+      { role: 'user', text: 'show repository context in packages/api' },
+    ]);
+    const first = await gen.next();
+    expect(first.value?.type).toBe('tool_call');
+    if (first.value?.type === 'tool_call') {
+      expect(first.value.call.name).toBe('repo_context');
+      expect(first.value.call.args.path).toBe('packages/api');
+    }
+  });
+
   it('streams a summary response after receiving a tool result', async () => {
     const config = loadConfig({});
     const provider = createProvider(config);

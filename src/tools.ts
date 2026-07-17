@@ -1,6 +1,8 @@
 import { basename, join, relative, resolve, sep } from 'node:path';
 import { readFileSync, readdirSync, type Dirent } from 'node:fs';
 
+import { discoverContext, formatContextSummary } from './context.js';
+
 export interface ToolCall {
   name: string;
   args: Record<string, string>;
@@ -204,6 +206,19 @@ function searchContent(args: Record<string, string>, workspace: string): ToolRes
   return { name: 'search_content', output: matches.join('\n'), truncated, error: null };
 }
 
+function repoContext(args: Record<string, string>, workspace: string): ToolResult {
+  const inputPath = args.path ?? '.';
+  const resolved = resolveSafePath(workspace, inputPath);
+  if (resolved === null) {
+    return { name: 'repo_context', output: '', truncated: false, error: `Path escapes the workspace: ${inputPath}` };
+  }
+  if (isProtectedPath(resolved, workspace)) {
+    return { name: 'repo_context', output: '', truncated: false, error: `Path is protected: ${inputPath}` };
+  }
+  const context = discoverContext(resolved);
+  return { name: 'repo_context', output: formatContextSummary(context), truncated: false, error: null };
+}
+
 export function executeTool(call: ToolCall, workspace: string): ToolResult {
   switch (call.name) {
     case 'list_files':
@@ -212,9 +227,11 @@ export function executeTool(call: ToolCall, workspace: string): ToolResult {
       return readFile(call.args, workspace);
     case 'search_content':
       return searchContent(call.args, workspace);
+    case 'repo_context':
+      return repoContext(call.args, workspace);
     default:
       return { name: call.name, output: '', truncated: false, error: `Unknown tool: ${call.name}` };
   }
 }
 
-export const TOOL_NAMES = ['list_files', 'read_file', 'search_content'] as const;
+export const TOOL_NAMES = ['list_files', 'read_file', 'search_content', 'repo_context'] as const;

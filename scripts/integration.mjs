@@ -14,6 +14,53 @@ const nodeBin = process.execPath;
 const fixturePath = resolve('omc-e2e-fixture.txt');
 const fixtureOriginal = 'alpha\nbeta\ngamma\n';
 
+// A multi-package repository the context turn inspects. It is its own Git repo
+// (nested inside the workspace) so repository-context discovery can report
+// uncommitted and untracked work without touching the outer repo. Removed in the
+// finally block.
+const repoFixturePath = resolve('omc-e2e-repo');
+
+function buildRepoFixture() {
+  rmSync(repoFixturePath, { recursive: true, force: true });
+  mkdirSync(join(repoFixturePath, 'packages', 'api'), { recursive: true });
+  mkdirSync(join(repoFixturePath, 'packages', 'web'), { recursive: true });
+  writeFileSync(join(repoFixturePath, 'AGENTS.md'), '# Fixture repository guidance\n');
+  writeFileSync(join(repoFixturePath, 'packages', 'api', 'AGENTS.md'), '# API package guidance\n');
+  writeFileSync(
+    join(repoFixturePath, 'package.json'),
+    JSON.stringify({ name: 'fixture-root', scripts: { build: 'tsc', test: 'vitest run' } }) + '\n',
+  );
+  writeFileSync(
+    join(repoFixturePath, 'packages', 'api', 'package.json'),
+    JSON.stringify({ name: 'api', scripts: { test: 'vitest run' } }) + '\n',
+  );
+  writeFileSync(
+    join(repoFixturePath, 'packages', 'web', 'package.json'),
+    JSON.stringify({ name: 'web', scripts: { build: 'tsc', test: 'vitest run' } }) + '\n',
+  );
+  writeFileSync(
+    join(repoFixturePath, 'Makefile'),
+    'build:\n\ttsc\nunit:\n\tvitest run\nintegration:\n\tnode scripts/integration.mjs\n',
+  );
+  writeFileSync(join(repoFixturePath, 'tsconfig.json'), '{}\n');
+  writeFileSync(join(repoFixturePath, 'packages', 'api', 'tracked.txt'), 'original\n');
+
+  function git(...args) {
+    return spawnSync('git', ['-C', repoFixturePath, ...args], { encoding: 'utf8' });
+  }
+  if (git('init').status !== 0) throw new Error('fixture git init failed');
+  git('config', 'user.email', 'e2e@example.com');
+  git('config', 'user.name', 'E2E Bot');
+  git('add', '.');
+  const commit = git('commit', '-m', 'fixture initial');
+  if (commit.status !== 0) throw new Error('fixture commit failed: ' + commit.stderr);
+
+  // Leave uncommitted (modified) tracked work and a new untracked file so the
+  // context summary has real Git state to report.
+  writeFileSync(join(repoFixturePath, 'packages', 'api', 'tracked.txt'), 'changed\n');
+  writeFileSync(join(repoFixturePath, 'notes.txt'), 'untracked work\n');
+}
+
 function tmux(...args) {
   return spawnSync('tmux', ['-S', socket, ...args], {
     encoding: 'utf8',
@@ -56,7 +103,7 @@ try {
   // full multi-turn transcript so the final capture shows every tool in action;
   // a shorter pane would scroll the earlier turns off-screen.
   const launchCmd = `env OMC_PROVIDER=test OMC_APPROVAL_TIMEOUT_MS=2000 ${JSON.stringify(nodeBin)} ${JSON.stringify(cli)}`;
-  const started = tmux('new-session', '-d', '-x', '120', '-y', '160', '-s', session, launchCmd);
+  const started = tmux('new-session', '-d', '-x', '120', '-y', '200', '-s', session, launchCmd);
   if (started.status !== 0) {
     throw new Error(started.stderr || 'Unable to start tmux integration session');
   }
@@ -162,8 +209,33 @@ try {
     throw new Error('Revert did not restore the original file content');
   }
 
-  // Verify usage reflects all eight completed turns (footer stays pinned on-screen)
-  const finalScreen = waitForContent('turns: 8');
+  // === Turn 9: build repository context from a multi-package fixture ===
+  buildRepoFixture();
+  spawnSync('sleep', ['0.3']);
+  sendKeys('show repository context in omc-e2e-repo', 'Enter');
+  waitForContent('repo_context');
+  // Nested instructions are resolved according to scope.
+  waitForContent('packages/api/AGENTS.md');
+  waitForContent('scope: packages/api');
+  // The summary identifies every package from real manifests.
+  waitForContent('fixture-root');
+  waitForContent('packages/web');
+  // Focused test commands derived from real build tooling.
+  waitForContent('make unit');
+  // Uncommitted and untracked user work is reported.
+  waitForContent('untracked: notes.txt');
+  waitForContent('modified: packages/api/tracked.txt');
+  waitForContent('ready');
+  // Discovery is read-only: the working tree is exactly as left.
+  if (readFileSync(join(repoFixturePath, 'packages', 'api', 'tracked.txt'), 'utf8') !== 'changed\n') {
+    throw new Error('repo_context modified tracked work');
+  }
+  if (readFileSync(join(repoFixturePath, 'notes.txt'), 'utf8') !== 'untracked work\n') {
+    throw new Error('repo_context modified untracked work');
+  }
+
+  // Verify usage reflects all nine completed turns (footer stays pinned on-screen)
+  const finalScreen = waitForContent('turns: 9');
 
   // The command and edit paths must each be visible in the transcript.
   for (const token of [
@@ -199,4 +271,5 @@ try {
   tmux('kill-server');
   rmSync(temporaryDirectory, { recursive: true, force: true });
   rmSync(fixturePath, { force: true });
+  rmSync(repoFixturePath, { recursive: true, force: true });
 }

@@ -104,6 +104,9 @@ function detectToolIntent(text: string): ToolCall | null {
       };
     }
   }
+  if (/\bcontext\b/.test(lower) || /\borient\b/.test(lower)) {
+    return { name: 'repo_context', args: { path: extractAfter(text, 'in') ?? '.' } };
+  }
   if (/\blist\b/.test(lower)) {
     return { name: 'list_files', args: { path: extractAfter(text, 'in') ?? '.' } };
   }

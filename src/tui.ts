@@ -13,6 +13,7 @@ import {
 import { runCommand } from './command.js';
 import { ComposerState, type CommandOutcome, type EditOutcome, type TranscriptMessage } from './composer.js';
 import { loadConfig, redact, type ModelConfig } from './config.js';
+import { discoverContext } from './context.js';
 import {
   commitEdit,
   prepareEdit,
@@ -76,6 +77,7 @@ export interface StatusInfo {
   canRetry: boolean;
   canRegenerate: boolean;
   canUndo: boolean;
+  repository?: string;
 }
 
 export interface ApprovalCardInfo {
@@ -293,7 +295,7 @@ export function renderScreen(
   header.push(fg.blue(boxLine('│', '', '│', cardInner)));
   header.push(fg.blue(boxLine('│', `  Model:      ${status.model}`, '│', cardInner)));
   header.push(fg.blue(boxLine('│', `  Connection: ${connectionLabel(status.connection)}`, '│', cardInner)));
-  header.push(fg.blue(boxLine('│', `  Repository: ${fg.dim('none')}`, '│', cardInner)));
+  header.push(fg.blue(boxLine('│', `  Repository: ${status.repository ?? fg.dim('none')}`, '│', cardInner)));
   header.push(`  ${fg.blue('└' + '─'.repeat(cardInner + 2) + '┘')}`);
   header.push('');
 
@@ -497,6 +499,14 @@ export async function launchTui(options: TuiOptions): Promise<void> {
   const stdout = process.stdout;
   const composer = new ComposerState();
 
+  // Orient before any coding begins: a concise, evidence-based snapshot of the
+  // repository shown in the status card. The full detail is available on demand
+  // through the repo_context tool.
+  const startupContext = discoverContext(workspace);
+  const repositoryLabel = startupContext.git.isRepo
+    ? `${startupContext.git.branch ?? 'detached'} · ${startupContext.packages.length} pkg`
+    : `${startupContext.packages.length} pkg`;
+
   let connection: ConnectionState = 'idle';
   let streamingText = '';
   let errorMessage: string | null = null;
@@ -552,6 +562,7 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       canRetry: canRetry(),
       canRegenerate: canRegenerate(),
       canUndo: canUndo(),
+      repository: repositoryLabel,
     };
   }
 
