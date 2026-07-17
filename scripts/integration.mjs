@@ -385,6 +385,127 @@ function verifyGitHandoff() {
   }
 }
 
+// Verify context compaction in an isolated session with a tiny context budget:
+// a manual /compact condenses a real transcript into a structured summary that
+// preserves execution state (changed files, commands, approvals, pending action)
+// derived from the transcript — never from generated prose. A fresh process then
+// resumes the compacted session and completes a fixture task using only the
+// summary, proving the resume contract. The session id is unique so it cannot
+// shadow the main flow's session, and is removed in the finally block.
+function verifyContextCompaction() {
+  const compactSession = `${session}-compact`;
+  const compactId = 'omc-e2e-compact';
+  const compactFile = resolve('.omc', 'sessions', `${compactId}.json`);
+  rmSync(compactFile, { force: true });
+
+  const launchEnv = [
+    'OMC_PROVIDER=test',
+    'OMC_APPROVAL_TIMEOUT_MS=2000',
+    'OMC_CONTEXT_LIMIT=40',
+    `OMC_SESSION_ID=${compactId}`,
+  ].join(' ');
+  const cmd = `env ${launchEnv} ${JSON.stringify(nodeBin)} ${JSON.stringify(cli)}`;
+  const started = tmux('new-session', '-d', '-x', '120', '-y', '120', '-s', compactSession, cmd);
+  if (started.status !== 0) {
+    throw new Error(started.stderr || 'Unable to start compact session');
+  }
+  const send = (...keys) => {
+    for (const key of keys) {
+      const result = tmux('send-keys', '-t', compactSession, key);
+      if (result.status !== 0) throw new Error(result.stderr || `Failed to send key: ${key}`);
+    }
+  };
+  try {
+    waitForContent('Composer', 30_000, compactSession);
+
+    // Build a small but real transcript: an applied edit and a denied command.
+    writeFileSync(fixturePath, fixtureOriginal, 'utf8');
+    send('edit omc-e2e-fixture.txt :: beta :: BETA', 'Enter');
+    waitForContent('Edit proposed', 30_000, compactSession);
+    send('y');
+    waitForContent('Edit applied', 30_000, compactSession);
+
+    spawnSync('sleep', ['0.3']);
+    send('run echo compaction-probe', 'Enter');
+    waitForContent('Approval required', 30_000, compactSession);
+    send('n');
+    waitForContent('Command denied', 30_000, compactSession);
+
+    // The context status reflects the tiny budget and offers compaction.
+    spawnSync('sleep', ['0.3']);
+    send('/compact status', 'Enter');
+    waitForContent('Context:', 30_000, compactSession);
+    waitForContent('Run /compact to condense it', 30_000, compactSession);
+
+    // Manual compaction condenses the transcript into a structured summary.
+    spawnSync('sleep', ['0.3']);
+    send('/compact', 'Enter');
+    waitForContent('Compacted', 30_000, compactSession);
+
+    // Assert the structured summary on the persisted session (deterministic and
+    // scroll-independent): the head is the summary, the original turns are gone,
+    // and execution state is preserved from the transcript fields — the applied
+    // edit's file, the command, and its denied outcome — never from prose.
+    spawnSync('sleep', ['0.3']);
+    const persisted = JSON.parse(readFileSync(compactFile, 'utf8'));
+    const summaryText = persisted.messages[0]?.text ?? '';
+    if (!summaryText.startsWith('[Compacted summary]')) {
+      throw new Error('Compacted summary was not persisted as the session head');
+    }
+    for (const expected of [
+      'Changed files (applied edits):',
+      'omc-e2e-fixture.txt',
+      'Commands run:',
+      'Approval outcomes:',
+      'denied',
+    ]) {
+      if (!summaryText.includes(expected)) {
+        throw new Error(`Compacted summary missing "${expected}"`);
+      }
+    }
+    if (persisted.messages.some((m) => m.role === 'user' && m.text === 'edit omc-e2e-fixture.txt :: beta :: BETA')) {
+      throw new Error('Original turns should have been replaced by the summary');
+    }
+
+    // Terminate the live session; a fresh process resumes the compacted state.
+    tmux('kill-session', '-t', compactSession);
+    spawnSync('sleep', ['0.3']);
+
+    // === Resume the compacted session and complete a fixture task from the summary ===
+    writeFileSync(fixturePath, fixtureOriginal, 'utf8');
+    const resumeCmd = `env OMC_PROVIDER=test OMC_APPROVAL_TIMEOUT_MS=2000 ${JSON.stringify(nodeBin)} ${JSON.stringify(cli)} sessions resume ${compactId}`;
+    const resumed = tmux('new-session', '-d', '-x', '120', '-y', '120', '-s', compactSession, resumeCmd);
+    if (resumed.status !== 0) {
+      throw new Error(resumed.stderr || 'Unable to resume compacted session');
+    }
+
+    // The restored transcript is the compacted summary, not the original turns.
+    waitForContent('[Compacted summary]', 30_000, compactSession);
+    waitForContent('omc-e2e-fixture.txt', 30_000, compactSession);
+
+    // Using only the compacted state, the resumed session completes a real task.
+    spawnSync('sleep', ['0.3']);
+    send('complete omc-e2e-fixture.txt :: beta :: BETA :: grep BETA omc-e2e-fixture.txt', 'Enter');
+    waitForContent('Edit proposed', 30_000, compactSession);
+    send('y');
+    waitForContent('Edit applied', 30_000, compactSession);
+    waitForContent('Approval required', 30_000, compactSession);
+    send('y');
+    waitForContent('Coding loop complete', 30_000, compactSession);
+    if (!readFileSync(fixturePath, 'utf8').includes('BETA')) {
+      throw new Error('Resumed compacted session did not complete the fixture task');
+    }
+
+    send('C-c');
+    spawnSync('sleep', ['0.5']);
+  } finally {
+    tmux('kill-session', '-t', compactSession);
+    spawnSync('sleep', ['0.1']);
+    rmSync(compactFile, { force: true });
+    rmSync(fixturePath, { force: true });
+  }
+}
+
 try {
   // Launch the TUI with the test provider. The pane is tall enough to hold the
   // full multi-turn transcript so the final capture shows every tool in action;
@@ -619,6 +740,9 @@ try {
 
   // === Git handoff: clean tree, agent-owned vs pre-existing, scoped commit ===
   verifyGitHandoff();
+
+  // === Context compaction: summarize a transcript, then resume and complete a task ===
+  verifyContextCompaction();
 
   // === Durability: terminate a live session, then resume it in a fresh process ===
 
