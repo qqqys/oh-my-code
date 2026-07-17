@@ -175,6 +175,12 @@ function toolBlock(message: TranscriptMessage): Block {
     return { kind: 'tool', header: `Model${args}`, lines: splitLines(message.text) };
   }
 
+  // Local /policy command output: same treatment as /model, a labeled notice
+  // kept out of the model context.
+  if (message.toolName === 'policy') {
+    return { kind: 'tool', header: `Policy${args}`, lines: splitLines(message.text) };
+  }
+
   const block: Block = { kind: 'tool', header: `Tool ${name}${args}`, lines: splitLines(message.text) };
   if (message.truncated === true) block.truncated = true;
   return block;
