@@ -1,0 +1,36 @@
+    ___  _   _     __  __            ____          _          ╭─ Session ───────────────────────────────────────────╮
+   / _ \| | | |   |  \/  | ___   _  / ___|___   __| | ___     │ Model: openai:qwen3.8-max (key set)                  │
+  | | | | |_| |   | |\/| |/ _ \ | | |   / _ \ / _` |/ _ \     │ Connection: not connected                            │
+  | |_| |  _  |   | |  | | (_) || | |__| (_) | (_| |  __/     │ Repository: detached · 0 pkg                         │
+   \___/|_| |_|   |_|  |_|\___/ |_|  \____\___/ \__,_|\___|   ╰──────────────────────────────────────────────────────╯
+  v0.0.0  ·  terminal-native coding agent
+
+  ─ Transcript ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  Ready for your next task
+  Ask a question, reference a file, or type /help to explore capabilities.
+
+  /model  switch profile    /status  inspect session    /workflows  orchestrate
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ❯ Ask · Composer ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  ❯
+
+  turns: 0  ·  tokens: 0
+  Enter send  ·  ↑↓ history  ·  Tab nav  ·  Esc cancel  ·  Ctrl+C exit
