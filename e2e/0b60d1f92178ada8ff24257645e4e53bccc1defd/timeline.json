@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "repository": "qqqys/oh-my-code",
+  "pullRequest": 67,
+  "commit": "0b60d1f92178ada8ff24257645e4e53bccc1defd",
+  "result": "PASS",
+  "events": [
+    {
+      "at": "2026-07-17T11:12:57.055Z",
+      "type": "build_verified"
+    },
+    {
+      "at": "2026-07-17T11:12:57.055Z",
+      "type": "tmux_started",
+      "session": "oh-my-code-qwen-preview",
+      "cols": 120,
+      "rows": 36
+    },
+    {
+      "at": "2026-07-17T11:12:57.055Z",
+      "type": "first_frame_ready"
+    },
+    {
+      "at": "2026-07-17T11:12:57.055Z",
+      "type": "capture_completed"
+    }
+  ]
+}
