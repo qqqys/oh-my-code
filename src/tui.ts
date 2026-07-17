@@ -23,6 +23,16 @@ import {
   type EditPrepared,
 } from './edit.js';
 import { createProvider, type ChatMessage, type Provider, type Usage } from './provider.js';
+import {
+  createSession,
+  isValidSessionId,
+  loadSession,
+  newSessionId,
+  saveSession,
+  shouldResumeStreaming,
+  SessionError,
+  type Session,
+} from './session.js';
 import { executeTool, type ToolCall, type ToolResult } from './tools.js';
 
 const ESC = '\x1b[';
@@ -419,6 +429,8 @@ export interface TuiOptions {
   version: string;
   config?: ModelConfig;
   workspace?: string;
+  sessionId?: string;
+  resume?: boolean;
 }
 
 const KEY = {
@@ -515,6 +527,48 @@ export async function launchTui(options: TuiOptions): Promise<void> {
   let lastErrorRecoverable = false;
   const usage: UsageInfo = { turns: 0, promptTokens: 0, completionTokens: 0 };
 
+  // Durable session: every launch persists its transcript so an interrupted run
+  // can be resumed. Resuming seeds the transcript and usage from disk and fails
+  // safely with recovery guidance when the stored session is missing or corrupt.
+  let session: Session;
+  if (options.resume === true) {
+    const requested = options.sessionId ?? process.env['OMC_SESSION_ID'] ?? '';
+    try {
+      session = loadSession(workspace, requested);
+    } catch (error) {
+      const guidance =
+        error instanceof SessionError ? error.message : `Could not resume session "${requested}".`;
+      process.stderr.write(`${guidance}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    for (const message of session.messages) {
+      composer.messages.push(message);
+    }
+    usage.turns = session.usage.turns;
+    usage.promptTokens = session.usage.promptTokens;
+    usage.completionTokens = session.usage.completionTokens;
+  } else {
+    const requested = options.sessionId ?? process.env['OMC_SESSION_ID'];
+    const sessionId = requested !== undefined && isValidSessionId(requested) ? requested : newSessionId();
+    session = createSession(sessionId);
+  }
+
+  // Best-effort persistence: a write failure must never crash the live session.
+  function persist(): void {
+    session.messages = composer.messages.slice();
+    session.usage = {
+      turns: usage.turns,
+      promptTokens: usage.promptTokens,
+      completionTokens: usage.completionTokens,
+    };
+    try {
+      saveSession(workspace, session);
+    } catch {
+      // Ignore persistence errors; the in-memory session keeps working.
+    }
+  }
+
   const approvalStore = ApprovalStore.load(defaultApprovalPath(workspace));
   const approvalTimeoutMs = parseTimeoutEnv(process.env['OMC_APPROVAL_TIMEOUT_MS'], 30_000);
   const commandTimeoutMs = parseTimeoutEnv(process.env['OMC_COMMAND_TIMEOUT_MS'], 120_000);
@@ -568,7 +622,7 @@ export async function launchTui(options: TuiOptions): Promise<void> {
 
   if (!stdin.isTTY || !stdout.isTTY) {
     const { columns, rows } = stdout;
-    const screen = renderScreen(columns ?? 80, rows ?? 24, version, [], '', 0, buildStatus());
+    const screen = renderScreen(columns ?? 80, rows ?? 24, version, composer.messages, '', 0, buildStatus());
     stdout.write(screen + '\n');
     return;
   }
@@ -817,6 +871,7 @@ export async function launchTui(options: TuiOptions): Promise<void> {
     } else {
       pushEditMessage('conflict', argsLabel, result.error);
     }
+    persist();
     render();
   }
 
@@ -908,6 +963,7 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       if (connection === 'connecting') {
         connection = 'done';
       }
+      persist();
       render();
     }
   }
@@ -1000,6 +1056,9 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       case 'enter': {
         const submitted = composer.submit();
         if (submitted) {
+          // Persist the pending user message before streaming so an interrupted
+          // turn can be resumed as a pending safe action.
+          persist();
           void streamResponse();
         }
         break;
@@ -1052,6 +1111,13 @@ export async function launchTui(options: TuiOptions): Promise<void> {
   process.on('SIGTERM', onSignal);
 
   render();
+
+  // On resume, continue only an interrupted, unanswered user message (a pending
+  // safe action). Completed turns are left exactly as restored, so finished
+  // mutations are never replayed.
+  if (options.resume === true && shouldResumeStreaming(composer.messages)) {
+    void streamResponse();
+  }
 
   return new Promise<void>((resolve) => {
     const check = setInterval(() => {

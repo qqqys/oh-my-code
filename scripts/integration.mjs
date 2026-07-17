@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -19,6 +19,12 @@ const fixtureOriginal = 'alpha\nbeta\ngamma\n';
 // uncommitted and untracked work without touching the outer repo. Removed in the
 // finally block.
 const repoFixturePath = resolve('omc-e2e-repo');
+
+// A fixed session id so the live run can be terminated and then resumed by a
+// fresh process. The stored transcript lives under the (git-ignored) .omc dir
+// and is removed in the finally block.
+const sessionId = 'omc-e2e-session';
+const sessionFile = resolve('.omc', 'sessions', `${sessionId}.json`);
 
 function buildRepoFixture() {
   rmSync(repoFixturePath, { recursive: true, force: true });
@@ -102,7 +108,10 @@ try {
   // Launch the TUI with the test provider. The pane is tall enough to hold the
   // full multi-turn transcript so the final capture shows every tool in action;
   // a shorter pane would scroll the earlier turns off-screen.
-  const launchCmd = `env OMC_PROVIDER=test OMC_APPROVAL_TIMEOUT_MS=2000 ${JSON.stringify(nodeBin)} ${JSON.stringify(cli)}`;
+  // Start from a clean session record so a stale file from a prior run cannot
+  // shadow this one.
+  rmSync(sessionFile, { force: true });
+  const launchCmd = `env OMC_PROVIDER=test OMC_APPROVAL_TIMEOUT_MS=2000 OMC_SESSION_ID=${sessionId} ${JSON.stringify(nodeBin)} ${JSON.stringify(cli)}`;
   const started = tmux('new-session', '-d', '-x', '120', '-y', '260', '-s', session, launchCmd);
   if (started.status !== 0) {
     throw new Error(started.stderr || 'Unable to start tmux integration session');
@@ -294,14 +303,74 @@ try {
   mkdirSync(evidenceDirectory, { recursive: true });
   writeFileSync(join(evidenceDirectory, 'oh-my-code.tmux.txt'), finalScreen, 'utf8');
 
-  // Exit
-  sendKeys('C-c');
+  // === Durability: terminate a live session, then resume it in a fresh process ===
 
-  // Verify the session ended cleanly
+  // The live session persisted its transcript to disk as it progressed.
+  if (!existsSync(sessionFile)) {
+    throw new Error('Live session was not persisted to disk');
+  }
+
+  // Queue one more command, then terminate the process before it can run. The
+  // user message is persisted before streaming begins, so this leaves a pending
+  // safe action on disk for a fresh process to resume rather than discard.
+  spawnSync('sleep', ['0.3']);
+  sendKeys('run echo hello-resume', 'Enter');
+  waitForContent('Approval required');
+  waitForContent('hello-resume');
+
+  // Kill the process abruptly (simulating a crash) mid-turn.
+  tmux('kill-session', '-t', session);
+  spawnSync('sleep', ['0.3']);
+  const killed = tmux('has-session', '-t', session);
+  if (killed.status === 0) {
+    throw new Error('Live session was not terminated');
+  }
+
+  // The persisted transcript ends with the unanswered user message: exactly the
+  // pending safe action a resume must continue.
+  const persisted = JSON.parse(readFileSync(sessionFile, 'utf8'));
+  const persistedLast = persisted.messages[persisted.messages.length - 1];
+  if (persistedLast === undefined || persistedLast.role !== 'user') {
+    throw new Error('Pending user message was not persisted for resume');
+  }
+
+  // === Resume the same session in a fresh process ===
+  const resumeCmd = `env OMC_PROVIDER=test OMC_APPROVAL_TIMEOUT_MS=2000 ${JSON.stringify(nodeBin)} ${JSON.stringify(cli)} sessions resume ${sessionId}`;
+  const resumed = tmux('new-session', '-d', '-x', '120', '-y', '260', '-s', session, resumeCmd);
+  if (resumed.status !== 0) {
+    throw new Error(resumed.stderr || 'Unable to resume session');
+  }
+
+  // The full transcript is restored, including usage from all eleven turns.
+  waitForContent('Transcript');
+  waitForContent('turns: 11');
+  waitForContent('list_files');
+  waitForContent('Coding loop blocked');
+
+  // The interrupted turn resumes as a pending safe action: the same command
+  // comes back for approval instead of being lost or silently re-run.
+  waitForContent('Approval required');
+  waitForContent('hello-resume');
+
+  // Allowing it finishes exactly the one interrupted turn. Completed turns are
+  // not replayed: usage advances from 11 to 12 (one new turn), not higher.
+  sendKeys('y');
+  waitForContent('hello-resume');
+  waitForContent('ready');
+  const resumedScreen = waitForContent('turns: 12');
+  if (resumedScreen.includes('streaming')) {
+    throw new Error('Resume re-streamed a completed turn');
+  }
+
+  // Preserve the resumed transcript for PR evidence.
+  writeFileSync(join(evidenceDirectory, 'oh-my-code.resumed.txt'), resumedScreen, 'utf8');
+
+  // Exit the resumed session cleanly.
+  sendKeys('C-c');
   spawnSync('sleep', ['0.5']);
   const hasSession = tmux('has-session', '-t', session);
   if (hasSession.status === 0) {
-    throw new Error('TUI did not exit after Ctrl+C');
+    throw new Error('Resumed TUI did not exit after Ctrl+C');
   }
 
   process.stdout.write('integration: ok\n');
@@ -310,4 +379,5 @@ try {
   rmSync(temporaryDirectory, { recursive: true, force: true });
   rmSync(fixturePath, { force: true });
   rmSync(repoFixturePath, { recursive: true, force: true });
+  rmSync(sessionFile, { force: true });
 }
