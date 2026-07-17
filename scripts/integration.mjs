@@ -112,7 +112,7 @@ try {
   // shadow this one.
   rmSync(sessionFile, { force: true });
   const launchCmd = `env OMC_PROVIDER=test OMC_APPROVAL_TIMEOUT_MS=2000 OMC_SESSION_ID=${sessionId} ${JSON.stringify(nodeBin)} ${JSON.stringify(cli)}`;
-  const started = tmux('new-session', '-d', '-x', '120', '-y', '260', '-s', session, launchCmd);
+  const started = tmux('new-session', '-d', '-x', '120', '-y', '340', '-s', session, launchCmd);
   if (started.status !== 0) {
     throw new Error(started.stderr || 'Unable to start tmux integration session');
   }
@@ -279,8 +279,29 @@ try {
   waitForContent('Remaining risks:');
   waitForContent('ready');
 
-  // Verify usage reflects all eleven completed turns (footer stays pinned on-screen)
-  const finalScreen = waitForContent('turns: 11');
+  // === Turn 12: a rich answer that fans out into distinct transcript blocks ===
+  // While it streams it shows a live progress block; once committed the same turn
+  // renders Markdown, code, and reasoning blocks side by side.
+  spawnSync('sleep', ['0.3']);
+  sendKeys('explain the transcript blocks', 'Enter');
+  waitForContent('Progress');
+  waitForContent('Markdown');
+  waitForContent('Code');
+  waitForContent('return a + b');
+  waitForContent('Reasoning');
+  waitForContent('ready');
+
+  // === Turn 13: a recoverable error renders as an error block, then retries ===
+  spawnSync('sleep', ['0.3']);
+  sendKeys('please recover from this', 'Enter');
+  waitForContent('Error');
+  waitForContent('Simulated transient network error');
+  waitForContent('Ctrl+R retry');
+  sendKeys('C-r');
+  waitForContent('ready');
+
+  // Verify usage reflects all thirteen completed turns (footer stays pinned on-screen)
+  const finalScreen = waitForContent('turns: 13');
 
   // The command, edit, and coding-loop paths must each be visible in the transcript.
   for (const token of [
@@ -292,6 +313,9 @@ try {
     'Edit reverted',
     'Coding loop complete',
     'Coding loop blocked',
+    'Markdown',
+    'Code',
+    'Reasoning',
   ]) {
     if (!finalScreen.includes(token)) {
       throw new Error(`Expected ${token} in final transcript`);
@@ -336,14 +360,14 @@ try {
 
   // === Resume the same session in a fresh process ===
   const resumeCmd = `env OMC_PROVIDER=test OMC_APPROVAL_TIMEOUT_MS=2000 ${JSON.stringify(nodeBin)} ${JSON.stringify(cli)} sessions resume ${sessionId}`;
-  const resumed = tmux('new-session', '-d', '-x', '120', '-y', '260', '-s', session, resumeCmd);
+  const resumed = tmux('new-session', '-d', '-x', '120', '-y', '340', '-s', session, resumeCmd);
   if (resumed.status !== 0) {
     throw new Error(resumed.stderr || 'Unable to resume session');
   }
 
-  // The full transcript is restored, including usage from all eleven turns.
+  // The full transcript is restored, including usage from all thirteen turns.
   waitForContent('Transcript');
-  waitForContent('turns: 11');
+  waitForContent('turns: 13');
   waitForContent('list_files');
   waitForContent('Coding loop blocked');
 
@@ -353,12 +377,14 @@ try {
   waitForContent('hello-resume');
 
   // Allowing it finishes exactly the one interrupted turn. Completed turns are
-  // not replayed: usage advances from 11 to 12 (one new turn), not higher.
+  // not replayed: usage advances from 13 to 14 (one new turn), not higher.
   sendKeys('y');
   waitForContent('hello-resume');
   waitForContent('ready');
-  const resumedScreen = waitForContent('turns: 12');
-  if (resumedScreen.includes('streaming')) {
+  const resumedScreen = waitForContent('turns: 14');
+  // A restored assistant turn must not be re-streamed: the live progress block
+  // (header "Progress (streaming…)") is absent once the resume settles.
+  if (resumedScreen.includes('Progress (streaming')) {
     throw new Error('Resume re-streamed a completed turn');
   }
 

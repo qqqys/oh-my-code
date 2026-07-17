@@ -365,3 +365,61 @@ describe('edit boundary rendering', () => {
     expect(screen).toContain('Ctrl+U undo');
   });
 });
+
+describe('transcript block rendering', () => {
+  it('splits an assistant message into Markdown, code, and reasoning blocks', () => {
+    const messages = [
+      { role: 'assistant' as const, text: '## Heading\n\n- a point\n```ts\nconst a = 1;\n```\na plain closer' },
+    ];
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', messages));
+    expect(screen).toContain('Markdown');
+    expect(screen).toContain('Code');
+    expect(screen).toContain('[ts]');
+    expect(screen).toContain('const a = 1;');
+    expect(screen).toContain('Reasoning');
+  });
+
+  it('renders an applied edit as a diff block with +/- markers', () => {
+    const messages = [
+      {
+        role: 'tool' as const,
+        text: 'Applied edit to src/app.ts.',
+        toolName: 'apply_edit',
+        toolArgs: 'path: src/app.ts',
+        editOutcome: 'applied' as const,
+        diff: [
+          { kind: 'del' as const, text: 'const a = 1' },
+          { kind: 'add' as const, text: 'const a = 2' },
+        ],
+      },
+    ];
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', messages));
+    expect(screen).toContain('Edit applied');
+    expect(screen).toContain('- const a = 1');
+    expect(screen).toContain('+ const a = 2');
+  });
+
+  it('collapses a selected block to a one-line marker', () => {
+    const messages = [{ role: 'assistant' as const, text: '## Title\n\n- first\n- second' }];
+    const screen = stripAnsi(
+      renderScreen(80, 40, '0.0.0', messages, '', 0, defaultStatus, null, null, {
+        selectedBlock: 0,
+        collapsed: new Set([0]),
+      }),
+    );
+    expect(screen).toContain('Markdown');
+    expect(screen).toContain('collapsed');
+    expect(screen).not.toContain('first');
+  });
+
+  it('shows a transient status message in the footer', () => {
+    const status: StatusInfo = { ...defaultStatus, statusMessage: 'Copied block to clipboard' };
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', [], '', 0, status));
+    expect(screen).toContain('Copied block to clipboard');
+  });
+
+  it('advertises block navigation in the footer hints', () => {
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0'));
+    expect(screen).toContain('Tab nav');
+  });
+});
