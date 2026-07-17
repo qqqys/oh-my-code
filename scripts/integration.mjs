@@ -73,10 +73,12 @@ function tmux(...args) {
   });
 }
 
-function capturePane() {
+function capturePane(target = session, withEscapes = false) {
   // Capture only the visible pane (not scrollback) so stale frames from the
-  // full-screen TUI redraw do not produce false-positive matches.
-  const captured = tmux('capture-pane', '-p', '-t', session);
+  // full-screen TUI redraw do not produce false-positive matches. The -e flag
+  // keeps the ANSI escape sequences (tmux otherwise renders them away), which the
+  // color-capability checks rely on.
+  const captured = tmux('capture-pane', withEscapes ? '-pe' : '-p', '-t', target);
   if (captured.status !== 0) {
     throw new Error(captured.stderr || 'Failed to capture tmux pane');
   }
@@ -92,16 +94,72 @@ function sendKeys(...keys) {
   }
 }
 
-function waitForContent(expected, timeoutMs = 10_000) {
+function waitForContent(expected, timeoutMs = 10_000, target = session) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const content = capturePane();
+    const content = capturePane(target);
     if (content.includes(expected)) {
       return content;
     }
     spawnSync('sleep', ['0.25']);
   }
   throw new Error(`Timed out waiting for content: ${expected}`);
+}
+
+// Verify the responsive + color-capability contract: the interface stays usable
+// at three terminal sizes under both full color and reduced color. Each case is
+// an isolated short-lived session so it cannot disturb the main flow's session.
+function verifyResponsiveMatrix() {
+  // A hue SGR parameter (30-37 or 90-97) anywhere in a sequence. Bold/dim/reverse
+  // (1/2/7) and reset (0) never match, so this detects color and only color.
+  const hue = /\x1b\[[0-9;]*(?:3[0-7]|9[0-7])m/;
+  const sizes = [
+    { name: 'minimum', x: 60, y: 12 },
+    { name: 'typical', x: 80, y: 24 },
+    { name: 'wide', x: 120, y: 40 },
+  ];
+  const colors = [
+    { name: 'full', env: 'FORCE_COLOR=1', expectHue: true },
+    { name: 'none', env: 'NO_COLOR=1', expectHue: false },
+  ];
+  for (const size of sizes) {
+    for (const color of colors) {
+      const matrixSession = `${session}-matrix`;
+      const cmd = `env OMC_PROVIDER=test OMC_APPROVAL_TIMEOUT_MS=2000 ${color.env} ${JSON.stringify(nodeBin)} ${JSON.stringify(cli)}`;
+      const started = tmux('new-session', '-d', '-x', String(size.x), '-y', String(size.y), '-s', matrixSession, cmd);
+      if (started.status !== 0) {
+        throw new Error(started.stderr || `Unable to start matrix session ${size.name}/${color.name}`);
+      }
+      try {
+        waitForContent('Composer', 10_000, matrixSession);
+        const plain = capturePane(matrixSession);
+        // The composer and footer are essential and stay on-screen at every size.
+        if (!plain.includes('Composer')) {
+          throw new Error(`matrix ${size.name}/${color.name}: composer missing`);
+        }
+        if (!plain.includes('Ctrl+C')) {
+          throw new Error(`matrix ${size.name}/${color.name}: footer hints missing`);
+        }
+        // Frame integrity: no rendered line is wider than the pane (no wrap/corruption).
+        for (const line of plain.split('\n')) {
+          if (line.replace(/\s+$/, '').length > size.x) {
+            throw new Error(`matrix ${size.name}/${color.name}: line wider than ${size.x} columns`);
+          }
+        }
+        // Color capability: hue is present only when full color is requested.
+        const withEscapes = capturePane(matrixSession, true);
+        if (color.expectHue && !hue.test(withEscapes)) {
+          throw new Error(`matrix ${size.name}/${color.name}: expected hue codes in full-color mode`);
+        }
+        if (!color.expectHue && hue.test(withEscapes)) {
+          throw new Error(`matrix ${size.name}/${color.name}: hue leaked into reduced-color mode`);
+        }
+      } finally {
+        tmux('kill-session', '-t', matrixSession);
+        spawnSync('sleep', ['0.1']);
+      }
+    }
+  }
 }
 
 try {
@@ -326,6 +384,9 @@ try {
   const evidenceDirectory = resolve('artifacts/e2e');
   mkdirSync(evidenceDirectory, { recursive: true });
   writeFileSync(join(evidenceDirectory, 'oh-my-code.tmux.txt'), finalScreen, 'utf8');
+
+  // === Responsive + color-capability contract: three sizes × two capabilities ===
+  verifyResponsiveMatrix();
 
   // === Durability: terminate a live session, then resume it in a fresh process ===
 
