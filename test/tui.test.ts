@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
+import { fullTheme, monoTheme } from '../src/theme.js';
 import {
   LOGO,
   renderScreen,
+  setActiveTheme,
   type ApprovalCardInfo,
   type EditCardInfo,
   type StatusInfo,
@@ -10,6 +12,11 @@ import {
 
 function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+}
+
+// The visible width of a rendered line, ignoring ANSI escape sequences.
+function visibleWidth(line: string): number {
+  return stripAnsi(line).length;
 }
 
 const defaultStatus: StatusInfo = {
@@ -421,5 +428,128 @@ describe('transcript block rendering', () => {
   it('advertises block navigation in the footer hints', () => {
     const screen = stripAnsi(renderScreen(80, 40, '0.0.0'));
     expect(screen).toContain('Tab nav');
+  });
+
+  it('reveals fold/copy shortcuts only while a block is selected', () => {
+    const messages = [{ role: 'assistant' as const, text: '## Title\n\n- a point' }];
+    const idle = stripAnsi(renderScreen(80, 40, '0.0.0', messages));
+    expect(idle).not.toContain('Ctrl+E fold');
+    expect(idle).not.toContain('Ctrl+Y copy');
+    const navigating = stripAnsi(
+      renderScreen(80, 40, '0.0.0', messages, '', 0, defaultStatus, null, null, {
+        selectedBlock: 0,
+        collapsed: new Set(),
+      }),
+    );
+    expect(navigating).toContain('Ctrl+E fold');
+    expect(navigating).toContain('Ctrl+Y copy');
+  });
+});
+
+describe('responsive layout', () => {
+  // A representative long transcript so the body would overflow small panes.
+  const longTranscript = Array.from({ length: 30 }, (_, i) => ({
+    role: 'user' as const,
+    text: `Message number ${i} with enough text to matter when the pane is small`,
+  }));
+
+  it('keeps the composer and footer on-screen at the minimum size', () => {
+    const screen = stripAnsi(renderScreen(60, 12, '0.0.0', longTranscript));
+    const lines = screen.split('\r\n');
+    expect(lines.length).toBe(12);
+    expect(screen).toContain('Composer');
+    expect(screen).toContain('Enter');
+    expect(screen).toContain('Ctrl+C');
+  });
+
+  it('drops the ASCII logo for a compact title on a short terminal', () => {
+    const screen = stripAnsi(renderScreen(80, 12, '0.0.0'));
+    expect(screen).toContain('Oh My Code');
+    expect(screen).not.toContain(LOGO[0]);
+  });
+
+  it('keeps the full logo on a wide, tall terminal', () => {
+    const screen = stripAnsi(renderScreen(120, 40, '0.0.0'));
+    for (const line of LOGO) {
+      expect(screen).toContain(line);
+    }
+  });
+
+  it('collapses the status card to a single line when short', () => {
+    const status: StatusInfo = { ...defaultStatus, repository: 'main · 3 pkg' };
+    const screen = stripAnsi(renderScreen(80, 12, '0.0.0', [], '', 0, status));
+    expect(screen).toContain('Model:');
+    expect(screen).toContain('Repo:');
+    expect(screen).toContain('main · 3 pkg');
+    expect(screen).not.toContain('Repository:');
+  });
+
+  it('wraps footer hints so every shortcut stays visible when narrow', () => {
+    const screen = stripAnsi(renderScreen(40, 30, '0.0.0'));
+    expect(screen).toContain('Enter');
+    expect(screen).toContain('Tab nav');
+    expect(screen).toContain('Ctrl+C');
+    expect(screen.split('\r\n').length).toBe(30);
+  });
+
+  it('never emits a line wider than the terminal at any size', () => {
+    const cases: Array<[number, number]> = [
+      [40, 30],
+      [60, 12],
+      [80, 24],
+      [120, 40],
+    ];
+    for (const [width, height] of cases) {
+      const screen = renderScreen(width, height, '0.0.0', longTranscript, 'some input text', 4);
+      const lines = screen.split('\r\n');
+      expect(lines.length).toBe(height);
+      for (const line of lines) {
+        expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+      }
+    }
+  });
+});
+
+describe('theme-aware rendering', () => {
+  // The renderer holds an active theme in module state; restore the identity
+  // theme after each case so it cannot leak into other tests.
+  afterEach(() => {
+    setActiveTheme(fullTheme);
+  });
+
+  const richStatus: StatusInfo = {
+    ...defaultStatus,
+    connection: 'streaming',
+    streamingText: 'partial response',
+    error: 'Simulated transient network error',
+  };
+
+  it('renders the same meaning under the reduced-color theme', () => {
+    const messages = [
+      { role: 'assistant' as const, text: '## Heading\n```ts\nconst a = 1;\n```\na closer' },
+    ];
+    setActiveTheme(monoTheme);
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', messages, '', 0, richStatus));
+    // Every meaning is carried by a glyph or label, so the no-hue render keeps them.
+    expect(screen).toContain('streaming');
+    expect(screen).toContain('Error');
+    expect(screen).toContain('Markdown');
+    expect(screen).toContain('Code');
+    expect(screen).toContain('Reasoning');
+  });
+
+  it('emits no hue codes under the reduced-color theme', () => {
+    setActiveTheme(monoTheme);
+    const raw = renderScreen(80, 40, '0.0.0', [], '', 0, richStatus);
+    // Hue families (30-37 / 90-97) must be absent; intensity/structure remain.
+    for (const code of ['31', '32', '33', '34', '35', '36', '37', '90']) {
+      expect(raw).not.toContain(`\x1b[${code}m`);
+    }
+  });
+
+  it('uses hue codes under the full-color identity theme', () => {
+    setActiveTheme(fullTheme);
+    const raw = renderScreen(80, 40, '0.0.0', [], '', 0, richStatus);
+    expect(raw).toContain('\x1b[36m');
   });
 });

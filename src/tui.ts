@@ -43,6 +43,7 @@ import {
   SessionError,
   type Session,
 } from './session.js';
+import { fullTheme, resolveTheme, type Theme } from './theme.js';
 import { executeTool, type ToolCall, type ToolResult } from './tools.js';
 
 const ESC = '\x1b[';
@@ -57,20 +58,15 @@ const seq = {
   moveTo: (row: number, col: number) => `${ESC}${row};${col}H`,
 } as const;
 
-const fg = {
-  reset: (s: string) => `${ESC}0m${s}${ESC}0m`,
-  bold: (s: string) => `${ESC}1m${s}${ESC}0m`,
-  dim: (s: string) => `${ESC}2m${s}${ESC}0m`,
-  green: (s: string) => `${ESC}32m${s}${ESC}0m`,
-  yellow: (s: string) => `${ESC}33m${s}${ESC}0m`,
-  blue: (s: string) => `${ESC}34m${s}${ESC}0m`,
-  cyan: (s: string) => `${ESC}36m${s}${ESC}0m`,
-  gray: (s: string) => `${ESC}90m${s}${ESC}0m`,
-  white: (s: string) => `${ESC}37m${s}${ESC}0m`,
-  red: (s: string) => `${ESC}31m${s}${ESC}0m`,
-  magenta: (s: string) => `${ESC}35m${s}${ESC}0m`,
-  reverse: (s: string) => `${ESC}7m${s}${ESC}0m`,
-} as const;
+// The active theme. Defaults to the full-color identity so rendering is
+// deterministic under test; launchTui swaps it for the reduced-color theme when
+// the terminal cannot (or should not) render hue. setActiveTheme lets tests
+// exercise either path.
+let fg: Theme = fullTheme;
+
+export function setActiveTheme(theme: Theme): void {
+  fg = theme;
+}
 
 export const LOGO = [
   '  ___  _   _     __  __            ____          _      ',
@@ -79,6 +75,17 @@ export const LOGO = [
   '| |_| |  _  |   | |  | | (_) || | |__| (_) | (_| |  __/',
   ' \\___/|_| |_|   |_|  |_|\\___/ |_|  \\____\\___/ \\__,_|\\___|',
 ];
+
+// The widest logo line; below this width the ASCII logo is replaced by a compact
+// one-line title so the interface stays usable on narrow terminals.
+const LOGO_WIDTH = LOGO.reduce((max, line) => Math.max(max, Array.from(line).length), 0);
+
+// Layout thresholds that trade decoration for usability as the terminal shrinks.
+// The composer and footer are always preserved; the logo (6 rows) and the full
+// status card (7 rows) are dropped first so the transcript keeps room even on a
+// classic 80x24 terminal. Below the card threshold a one-line status replaces it.
+const LOGO_MIN_HEIGHT = 28;
+const STATUS_CARD_MIN_HEIGHT = 24;
 
 export type ConnectionState = 'idle' | 'connecting' | 'streaming' | 'done' | 'error';
 
@@ -132,6 +139,31 @@ function visibleLength(text: string): number {
   return Array.from(stripAnsi(text)).length;
 }
 
+// Truncate a possibly-styled line to at most `width` visible columns, preserving
+// ANSI escape sequences and appending a reset so a cut never leaves an open
+// style bleeding into the next frame.
+function clipToWidth(text: string, width: number): string {
+  if (visibleLength(text) <= width) return text;
+  let out = '';
+  let visible = 0;
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === '\x1b') {
+      const match = /^\x1b\[[0-9;]*[a-zA-Z]/.exec(text.slice(i));
+      if (match !== null) {
+        out += match[0];
+        i += match[0].length;
+        continue;
+      }
+    }
+    if (visible >= width) break;
+    out += text[i];
+    visible += 1;
+    i += 1;
+  }
+  return `${out}${ESC}0m`;
+}
+
 function pad(text: string, width: number): string {
   const visible = visibleLength(text);
   if (visible >= width) return text;
@@ -146,7 +178,7 @@ function center(text: string, width: number): string {
 }
 
 function boxLine(left: string, content: string, right: string, innerWidth: number): string {
-  return `  ${left} ${pad(content, innerWidth)} ${right}`;
+  return `  ${left} ${pad(clipToWidth(content, innerWidth), innerWidth)} ${right}`;
 }
 
 function wrapText(text: string, maxWidth: number): string[] {
@@ -195,18 +227,47 @@ function usageLabel(usage: UsageInfo): string {
   return fg.dim(`turns: ${usage.turns}  ·  tokens: ${total}`);
 }
 
-function actionHints(status: StatusInfo): string {
+function actionHints(status: StatusInfo, selectedBlock: number): string {
   const hints: string[] = ['Enter send', '↑↓ history', 'Tab nav', 'Esc cancel', 'Ctrl+C exit'];
+  // Once a block is selected, reveal the navigation-only shortcuts so they are
+  // discoverable exactly when they apply.
+  let at = 3;
+  if (selectedBlock >= 0) {
+    hints.splice(at, 0, 'Ctrl+E fold', 'Ctrl+Y copy');
+    at += 2;
+  }
   if (status.canRetry) {
-    hints.splice(2, 0, 'Ctrl+R retry');
+    hints.splice(at, 0, 'Ctrl+R retry');
+    at += 1;
   }
   if (status.canRegenerate) {
-    hints.splice(status.canRetry ? 3 : 2, 0, 'Ctrl+G regen');
+    hints.splice(at, 0, 'Ctrl+G regen');
+    at += 1;
   }
   if (status.canUndo) {
     hints.splice(hints.length - 1, 0, 'Ctrl+U undo');
   }
   return hints.join('  ·  ');
+}
+
+// Wrap a " · "-joined hint line so each row fits the terminal width. Keeps the
+// footer readable at narrow sizes instead of overflowing or being clipped.
+function wrapHints(hints: string, width: number): string[] {
+  if (visibleLength(hints) <= width) return [hints];
+  const parts = hints.split('  ·  ');
+  const lines: string[] = [];
+  let current = '';
+  for (const part of parts) {
+    const candidate = current.length === 0 ? part : `${current}  ·  ${part}`;
+    if (current.length === 0 || visibleLength(candidate) <= width) {
+      current = candidate;
+    } else {
+      lines.push(current);
+      current = part;
+    }
+  }
+  if (current.length > 0) lines.push(current);
+  return lines;
 }
 
 function riskLabel(risk: Risk): string {
@@ -346,22 +407,36 @@ export function renderScreen(
 ): string {
   const header: string[] = [];
 
-  // Logo block
-  for (const line of LOGO) {
-    header.push(center(fg.cyan(fg.bold(line)), width));
+  // Identity: the full ASCII logo only when there is room; otherwise a compact
+  // one-line title keeps the header small on narrow or short terminals.
+  const showLogo = width >= LOGO_WIDTH && height >= LOGO_MIN_HEIGHT;
+  if (showLogo) {
+    for (const line of LOGO) {
+      header.push(center(fg.cyan(fg.bold(line)), width));
+    }
+    header.push(center(fg.dim(`v${version}`), width));
+  } else {
+    header.push(`  ${fg.cyan(fg.bold('Oh My Code'))} ${fg.dim(`v${version}`)}`);
   }
-  header.push(center(fg.dim(`v${version}`), width));
   header.push('');
 
-  // Status card
-  const cardInner = width > 10 ? width - 10 : 1;
-  header.push(`  ${fg.blue('┌' + '─'.repeat(cardInner + 2) + '┐')}`);
-  header.push(fg.blue(boxLine('│', fg.bold('  Status'), '│', cardInner)));
-  header.push(fg.blue(boxLine('│', '', '│', cardInner)));
-  header.push(fg.blue(boxLine('│', `  Model:      ${status.model}`, '│', cardInner)));
-  header.push(fg.blue(boxLine('│', `  Connection: ${connectionLabel(status.connection)}`, '│', cardInner)));
-  header.push(fg.blue(boxLine('│', `  Repository: ${status.repository ?? fg.dim('none')}`, '│', cardInner)));
-  header.push(`  ${fg.blue('└' + '─'.repeat(cardInner + 2) + '┘')}`);
+  // Status: a boxed card when tall enough, otherwise a single clipped line so
+  // model/connection/repository remain visible without consuming the transcript.
+  if (height >= STATUS_CARD_MIN_HEIGHT) {
+    const cardInner = width > 10 ? width - 10 : 1;
+    header.push(`  ${fg.blue('┌' + '─'.repeat(cardInner + 2) + '┐')}`);
+    header.push(fg.blue(boxLine('│', fg.bold('  Status'), '│', cardInner)));
+    header.push(fg.blue(boxLine('│', '', '│', cardInner)));
+    header.push(fg.blue(boxLine('│', `  Model:      ${status.model}`, '│', cardInner)));
+    header.push(fg.blue(boxLine('│', `  Connection: ${connectionLabel(status.connection)}`, '│', cardInner)));
+    header.push(fg.blue(boxLine('│', `  Repository: ${status.repository ?? fg.dim('none')}`, '│', cardInner)));
+    header.push(`  ${fg.blue('└' + '─'.repeat(cardInner + 2) + '┘')}`);
+  } else {
+    const repo = status.repository ?? 'none';
+    header.push(
+      `  ${fg.bold('Status')}  Model: ${status.model}  ·  ${connectionLabel(status.connection)}  ·  Repo: ${repo}`,
+    );
+  }
   header.push('');
 
   // Transcript header
@@ -424,23 +499,26 @@ export function renderScreen(
       ? 'y allow once  ·  a always  ·  n deny  ·  Esc cancel  ·  Ctrl+C exit'
       : edit !== null
         ? 'y accept  ·  n reject  ·  Esc cancel  ·  Ctrl+C exit'
-        : actionHints(status);
+        : actionHints(status, nav.selectedBlock);
   const footer: string[] = [];
   if (status.statusMessage !== undefined && status.statusMessage.length > 0) {
     footer.push(center(fg.green(status.statusMessage), width));
   }
   footer.push(center(usageLabel(status.usage), width));
-  footer.push(center(fg.dim(footerHints), width));
+  // Wrap the hints so a narrow terminal keeps every shortcut on-screen instead
+  // of clipping the later ones.
+  for (const line of wrapHints(footerHints, width - 2)) {
+    footer.push(center(fg.dim(line), width));
+  }
 
+  // The composer and footer are essential and pinned to the bottom. Trim blank
+  // header padding first so they always remain on-screen at small heights.
+  while (header.length + composer.length + footer.length > height && header.includes('')) {
+    header.splice(header.lastIndexOf(''), 1);
+  }
   const available = height - header.length - composer.length - footer.length;
   const lines: string[] = [...header];
-  if (available <= 0) {
-    return lines
-      .slice(0, height)
-      .map((line) => pad(line, width))
-      .join('\r\n');
-  }
-  if (body.length > available) {
+  if (available > 0 && body.length > available) {
     // Reserve one row for the "more above" marker, leaving the rest for content.
     const contentRows = available - 1;
     // When a block is selected, scroll so its header is visible; otherwise keep
@@ -459,7 +537,7 @@ export function renderScreen(
       // A selected block at the very top: use the full available height.
       lines.push(...body.slice(0, available));
     }
-  } else {
+  } else if (available > 0) {
     lines.push(...body);
   }
   lines.push(...composer);
@@ -469,10 +547,11 @@ export function renderScreen(
   lines.push(...footer);
 
   // Pad every line to full width so a redraw fully overwrites the prior frame
-  // and no stale characters bleed through.
+  // and no stale characters bleed through. clipToWidth keeps any line whose
+  // content is wider than the terminal from wrapping and corrupting the frame.
   return lines
     .slice(0, height)
-    .map((line) => pad(line, width))
+    .map((line) => pad(clipToWidth(line, width), width))
     .join('\r\n');
 }
 
@@ -568,6 +647,12 @@ export async function launchTui(options: TuiOptions): Promise<void> {
   const stdin = process.stdin;
   const stdout = process.stdout;
   const composer = new ComposerState();
+
+  // Pick the theme from the environment before the first frame: full color by
+  // default, the reduced-color theme when the terminal cannot (or should not)
+  // render hue. Every meaning is also carried by a glyph or label, so no
+  // information is lost in either theme.
+  setActiveTheme(resolveTheme());
 
   // Orient before any coding begins: a concise, evidence-based snapshot of the
   // repository shown in the status card. The full detail is available on demand
