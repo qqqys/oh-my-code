@@ -168,6 +168,13 @@ function toolBlock(message: TranscriptMessage): Block {
     return block;
   }
 
+  // Local /model command output: a tool block with a clean "Model" header. It is
+  // kept out of the model context (only user/assistant messages are sent), so it
+  // renders as a labeled notice rather than a real tool invocation.
+  if (message.toolName === 'model') {
+    return { kind: 'tool', header: `Model${args}`, lines: splitLines(message.text) };
+  }
+
   const block: Block = { kind: 'tool', header: `Tool ${name}${args}`, lines: splitLines(message.text) };
   if (message.truncated === true) block.truncated = true;
   return block;

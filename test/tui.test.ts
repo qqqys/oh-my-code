@@ -553,3 +553,22 @@ describe('theme-aware rendering', () => {
     expect(raw).toContain('\x1b[36m');
   });
 });
+
+describe('model command rendering', () => {
+  it('renders /model output as a labeled Model block, not a raw tool', () => {
+    const messages = [
+      {
+        role: 'tool' as const,
+        text: 'Active profile: test\nAvailable profiles:\n- test (test:test-model) [streaming, tools]  (active)',
+        toolName: 'model',
+        toolArgs: 'list',
+        truncated: false,
+      },
+    ];
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', messages));
+    expect(screen).toContain('Model (list)');
+    expect(screen).toContain('Active profile: test');
+    // It is a local notice, not a generic tool invocation.
+    expect(screen).not.toContain('Tool model');
+  });
+});

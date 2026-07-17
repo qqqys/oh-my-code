@@ -32,6 +32,14 @@ import {
   type EditOperation,
   type EditPrepared,
 } from './edit.js';
+import {
+  activeProfileForConfig,
+  catalogProfiles,
+  effectiveConfigText,
+  profilesListing,
+  resolveSwitch,
+  type ModelProfile,
+} from './profiles.js';
 import { createProvider, type ChatMessage, type Provider, type Usage } from './provider.js';
 import {
   createSession,
@@ -641,8 +649,12 @@ function resolveCwd(workspace: string, inputPath: string): string | null {
 
 export async function launchTui(options: TuiOptions): Promise<void> {
   const { version } = options;
-  const config = options.config ?? loadConfig();
-  const provider: Provider = createProvider(config);
+  // Mutable so /model can switch the active profile mid-session; the new config
+  // and provider apply only to subsequent turns.
+  let config = options.config ?? loadConfig();
+  let provider: Provider = createProvider(config);
+  const profileCatalog = catalogProfiles();
+  let activeProfile: ModelProfile = activeProfileForConfig(config, profileCatalog);
   const workspace = options.workspace ?? process.cwd();
   const stdin = process.stdin;
   const stdout = process.stdout;
@@ -1095,6 +1107,8 @@ export async function launchTui(options: TuiOptions): Promise<void> {
     abortController = new AbortController();
     const chatMessages: ChatMessage[] = [];
     for (const m of composer.messages) {
+      // Slash commands are local notices; they never enter the model context.
+      if (m.role === 'user' && m.text.startsWith('/')) continue;
       if (m.role === 'user' || m.role === 'assistant') {
         chatMessages.push({ role: m.role, text: m.text });
       }
@@ -1103,6 +1117,7 @@ export async function launchTui(options: TuiOptions): Promise<void> {
     try {
       const gen = provider.stream(chatMessages, abortController.signal);
       let toolInput: ToolResult | undefined;
+      let stopTurn = false;
       while (true) {
         const { value, done } = await gen.next(toolInput);
         if (done) break;
@@ -1112,10 +1127,32 @@ export async function launchTui(options: TuiOptions): Promise<void> {
           case 'delta':
             connection = 'streaming';
             streamingText += value.text;
-            render();
+            // A no-streaming profile still receives tokens but only renders the
+            // final text once the turn completes.
+            if (activeProfile.capabilities.streaming) render();
             break;
           case 'tool_call': {
             connection = 'streaming';
+            if (!activeProfile.capabilities.tools) {
+              // Capability fallback: skip the tool and end the turn with an
+              // actionable notice instead of executing it.
+              const skipArgs = Object.entries(value.call.args)
+                .map(([k, v]) => `${k}: ${v}`)
+                .join(', ');
+              composer.messages.push({
+                role: 'tool',
+                text: `Skipped ${value.call.name}: the active profile (${activeProfile.name}) does not support tools. Use /model use <name> to switch to a profile that does.`,
+                toolName: value.call.name,
+                toolArgs: skipArgs,
+                truncated: false,
+              });
+              streamingText = '';
+              connection = 'done';
+              usage.turns += 1;
+              stopTurn = true;
+              render();
+              break;
+            }
             if (value.call.name === 'run_command') {
               toolInput = await handleCommand(value.call);
             } else if (value.call.name === 'apply_edit') {
@@ -1156,6 +1193,8 @@ export async function launchTui(options: TuiOptions): Promise<void> {
             render();
             break;
         }
+        // A capability-limited turn ends early without consuming further events.
+        if (stopTurn) break;
       }
     } catch (error) {
       connection = 'error';
@@ -1193,6 +1232,51 @@ export async function launchTui(options: TuiOptions): Promise<void> {
     collapsed.clear();
     selectedBlock = -1;
     void streamResponse();
+  }
+
+  // Local slash commands run entirely client-side: they never reach the model,
+  // so their output is pushed as a labeled notice and excluded from the chat
+  // context. Returns true when the line was handled as a command.
+  function runSlashCommand(text: string): boolean {
+    if (!text.startsWith('/')) return false;
+    const space = text.indexOf(' ');
+    const command = (space === -1 ? text : text.slice(0, space)).toLowerCase();
+    const args = space === -1 ? '' : text.slice(space + 1);
+    if (command === '/model') {
+      runModelCommand(args);
+    } else {
+      pushModelNotice(`Unknown command: ${command}. Available: /model.`, text);
+    }
+    return true;
+  }
+
+  function pushModelNotice(output: string, args: string): void {
+    composer.messages.push({ role: 'tool', text: output, toolName: 'model', toolArgs: args, truncated: false });
+  }
+
+  function runModelCommand(args: string): void {
+    const parts = args.trim().split(/\s+/).filter((part) => part.length > 0);
+    const sub = (parts[0] ?? 'list').toLowerCase();
+    if (sub === 'list') {
+      pushModelNotice(profilesListing(profileCatalog, activeProfile), 'list');
+    } else if (sub === 'show') {
+      pushModelNotice(effectiveConfigText(activeProfile, config), 'show');
+    } else if (sub === 'use') {
+      useProfile(parts.slice(1).join(' ').trim());
+    } else {
+      pushModelNotice(`Unknown /model subcommand: ${sub}. Try: list, show, use <name>.`, sub);
+    }
+  }
+
+  function useProfile(name: string): void {
+    const result = resolveSwitch(profileCatalog, name, config);
+    if (result.kind === 'switched') {
+      // Apply only to subsequent turns: rebuild config and provider now.
+      config = result.config;
+      provider = createProvider(config);
+      activeProfile = result.profile;
+    }
+    pushModelNotice(result.text, `use ${name}`.trim());
   }
 
   function onKeypress(data: Buffer): void {
@@ -1266,6 +1350,17 @@ export async function launchTui(options: TuiOptions): Promise<void> {
         composer.historyDown();
         break;
       case 'enter': {
+        // Slash commands run locally: record the command line, run it, and stop
+        // (no model turn). They are excluded from the chat context below.
+        if (composer.input.trim().startsWith('/')) {
+          if (composer.submit()) {
+            selectedBlock = -1;
+            runSlashCommand(composer.messages[composer.messages.length - 1]?.text ?? '');
+            persist();
+            render();
+          }
+          break;
+        }
         const submitted = composer.submit();
         if (submitted) {
           // A new prompt returns to the live tail so the answer is visible.
