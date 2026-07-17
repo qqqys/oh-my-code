@@ -11,6 +11,12 @@ import {
   type Risk,
 } from './approval.js';
 import {
+  PolicyStore,
+  defaultPolicyPaths,
+  type PolicyDecision,
+  type PolicyScope,
+} from './policy.js';
+import {
   blockBodyLines,
   blockGlyph,
   blockPlainText,
@@ -732,6 +738,7 @@ export async function launchTui(options: TuiOptions): Promise<void> {
   }
 
   const approvalStore = ApprovalStore.load(defaultApprovalPath(workspace));
+  const policyStore = PolicyStore.load(defaultPolicyPaths(workspace));
   const approvalTimeoutMs = parseTimeoutEnv(process.env['OMC_APPROVAL_TIMEOUT_MS'], 30_000);
   const commandTimeoutMs = parseTimeoutEnv(process.env['OMC_COMMAND_TIMEOUT_MS'], 120_000);
   let pendingApproval:
@@ -921,8 +928,22 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       return { name: 'run_command', output: '', truncated: false, error };
     }
 
+    // Policy resolves first: a deny blocks outright, an allow bypasses the
+    // approval prompt, and ask defers to the approval boundary below.
+    const policyDecision = policyStore.decide({ command, cwd });
+    if (policyDecision.decision === 'deny') {
+      const reason = `Denied by policy: ${policyDecision.reason}`;
+      pushCommandMessage(call, 'denied', reason, false);
+      return { name: 'run_command', output: '', truncated: false, error: reason };
+    }
+
     const request = buildRequest(command, cwd);
-    const outcome = approvalStore.matches(request) ? 'allow-rule' : await requestApproval(request);
+    const outcome =
+      policyDecision.decision === 'allow'
+        ? 'allow-once'
+        : approvalStore.matches(request)
+          ? 'allow-rule'
+          : await requestApproval(request);
     if (outcome === 'allow-rule' && !approvalStore.matches(request)) {
       approvalStore.add({ command: request.command, cwd: request.cwd });
     }
@@ -1244,14 +1265,121 @@ export async function launchTui(options: TuiOptions): Promise<void> {
     const args = space === -1 ? '' : text.slice(space + 1);
     if (command === '/model') {
       runModelCommand(args);
+    } else if (command === '/policy') {
+      runPolicyCommand(args);
     } else {
-      pushModelNotice(`Unknown command: ${command}. Available: /model.`, text);
+      pushModelNotice(`Unknown command: ${command}. Available: /model, /policy.`, text);
     }
     return true;
   }
 
   function pushModelNotice(output: string, args: string): void {
     composer.messages.push({ role: 'tool', text: output, toolName: 'model', toolArgs: args, truncated: false });
+  }
+
+  function pushPolicyNotice(output: string, args: string): void {
+    composer.messages.push({ role: 'tool', text: output, toolName: 'policy', toolArgs: args, truncated: false });
+  }
+
+  function runPolicyCommand(args: string): void {
+    const body = args.trim();
+    const parts = body.split(/\s+/).filter((part) => part.length > 0);
+    const sub = (parts[0] ?? 'help').toLowerCase();
+    const rest = parts.slice(1);
+    const isScope = (value: string | undefined): value is PolicyScope =>
+      value === 'user' || value === 'project' || value === 'temporary';
+    const isDecision = (value: string | undefined): value is PolicyDecision =>
+      value === 'allow' || value === 'ask' || value === 'deny';
+
+    if (sub === 'list') {
+      const scopes: PolicyScope[] = ['user', 'project', 'temporary'];
+      const lines = ['Policy rules by scope:'];
+      for (const scope of scopes) {
+        const rules = policyStore.list(scope);
+        lines.push(`${scope}:`);
+        if (rules.length === 0) lines.push('  (none)');
+        else for (const rule of rules) lines.push(`  ${rule.decision} "${rule.command}"`);
+      }
+      pushPolicyNotice(lines.join('\n'), 'list');
+      return;
+    }
+
+    if (sub === 'audit') {
+      const entries = policyStore.audit().slice(-20);
+      const lines = ['Policy audit (oldest first):'];
+      if (entries.length === 0) lines.push('  (no entries)');
+      for (const entry of entries) {
+        lines.push(`  [${entry.action}] ${entry.scope} ${entry.decision} "${entry.command}"`);
+      }
+      pushPolicyNotice(lines.join('\n'), 'audit');
+      return;
+    }
+
+    if (sub === 'explain') {
+      const command = rest.join(' ');
+      if (command.length === 0) {
+        pushPolicyNotice('Usage: /policy explain <command>', 'explain');
+        return;
+      }
+      // A dry-run preview: resolve through the engine without recording an audit
+      // entry, since nothing is actually executed.
+      const outcome = policyStore.engine().decide({ command, cwd: workspace });
+      pushPolicyNotice(
+        [
+          `Policy decision for "${command}"`,
+          `Decision: ${outcome.decision}`,
+          `Reason: ${outcome.reason}`,
+          'Precedence: user → project → temporary (deny wins; user sets the ceiling)',
+        ].join('\n'),
+        `explain ${command}`,
+      );
+      return;
+    }
+
+    if (sub === 'set' || sub === 'temp') {
+      const scope = sub === 'temp' ? 'temporary' : rest[0];
+      const decisionIndex = sub === 'temp' ? 0 : 1;
+      const decision = rest[decisionIndex];
+      const command = rest.slice(decisionIndex + 1).join(' ');
+      if (!isScope(scope) || !isDecision(decision) || command.length === 0) {
+        pushPolicyNotice(
+          'Usage: /policy set <user|project> <allow|ask|deny> <command>  (or /policy temp <decision> <command>)',
+          sub,
+        );
+        return;
+      }
+      policyStore.set(scope, { command, cwd: workspace, decision });
+      pushPolicyNotice(`Policy set: ${scope} ${decision} "${command}"`, `${sub} ${scope} ${decision}`);
+      return;
+    }
+
+    if (sub === 'revoke') {
+      const scope = rest[0];
+      const command = rest.slice(1).join(' ');
+      if (!isScope(scope) || command.length === 0) {
+        pushPolicyNotice('Usage: /policy revoke <user|project|temporary> <command>', 'revoke');
+        return;
+      }
+      const revoked = policyStore.revoke(scope, command, workspace);
+      pushPolicyNotice(
+        revoked ? `Policy revoked: ${scope} "${command}"` : `No ${scope} policy for "${command}"`,
+        `revoke ${scope}`,
+      );
+      return;
+    }
+
+    pushPolicyNotice(
+      [
+        'Policy commands:',
+        '  /policy list                          show all rules by scope',
+        '  /policy set <user|project> <allow|ask|deny> <command>',
+        '  /policy temp <allow|ask|deny> <command>    session-only override',
+        '  /policy explain <command>             show the decision before running',
+        '  /policy revoke <user|project|temporary> <command>',
+        '  /policy audit                         show the recent decision trail',
+      ].join('\n'),
+      'help',
+    );
   }
 
   function runModelCommand(args: string): void {

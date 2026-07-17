@@ -222,6 +222,77 @@ function verifyModelProfiles() {
   }
 }
 
+// Verify tool permission policies in an isolated session: a user deny and a
+// conflicting project allow for the same command resolve to deny (a project
+// cannot broaden past the user), a temporary override is inspectable, revoking
+// the user rule changes the decision, and the audit trail records each change.
+// Policy paths point at a throwaway directory so the run never touches the
+// operator's real ~/.omc or the repository's own policy file.
+function verifyPolicyGovernance() {
+  const policySession = `${session}-policy`;
+  const policyDirectory = join(temporaryDirectory, 'policy');
+  const policyEnv = [
+    'OMC_PROVIDER=test',
+    'OMC_APPROVAL_TIMEOUT_MS=2000',
+    `OMC_USER_POLICY_PATH=${JSON.stringify(join(policyDirectory, 'user.json'))}`,
+    `OMC_PROJECT_POLICY_PATH=${JSON.stringify(join(policyDirectory, 'project.json'))}`,
+    `OMC_POLICY_AUDIT_PATH=${JSON.stringify(join(policyDirectory, 'audit.json'))}`,
+  ].join(' ');
+  const cmd = `env ${policyEnv} ${JSON.stringify(nodeBin)} ${JSON.stringify(cli)}`;
+  const started = tmux('new-session', '-d', '-x', '120', '-y', '40', '-s', policySession, cmd);
+  if (started.status !== 0) {
+    throw new Error(started.stderr || 'Unable to start policy session');
+  }
+  const send = (...keys) => {
+    for (const key of keys) {
+      const result = tmux('send-keys', '-t', policySession, key);
+      if (result.status !== 0) throw new Error(result.stderr || `Failed to send key: ${key}`);
+    }
+  };
+  try {
+    waitForContent('Composer', 30_000, policySession);
+
+    // A user deny and a conflicting project allow for the same command.
+    send('/policy set user deny git push', 'Enter');
+    waitForContent('Policy set: user deny', 30_000, policySession);
+    spawnSync('sleep', ['0.3']);
+    send('/policy set project allow git push', 'Enter');
+    waitForContent('Policy set: project allow', 30_000, policySession);
+
+    // Conflict resolves to deny: the project cannot broaden past the user.
+    spawnSync('sleep', ['0.3']);
+    send('/policy explain git push', 'Enter');
+    waitForContent('Decision: deny', 30_000, policySession);
+    waitForContent('denied by user policy', 30_000, policySession);
+
+    // A temporary override is created and inspectable, but deny still wins.
+    spawnSync('sleep', ['0.3']);
+    send('/policy temp allow git push', 'Enter');
+    waitForContent('Policy set: temporary allow', 30_000, policySession);
+    spawnSync('sleep', ['0.3']);
+    send('/policy list', 'Enter');
+    waitForContent('temporary:', 30_000, policySession);
+
+    // Revoking the user rule changes the decision; the project allow is still
+    // capped at the default ask ceiling, so it never silently broadens.
+    spawnSync('sleep', ['0.3']);
+    send('/policy revoke user git push', 'Enter');
+    waitForContent('Policy revoked: user', 30_000, policySession);
+    spawnSync('sleep', ['0.3']);
+    send('/policy explain git push', 'Enter');
+    waitForContent('Decision: ask', 30_000, policySession);
+
+    // The audit trail records the mutations.
+    spawnSync('sleep', ['0.3']);
+    send('/policy audit', 'Enter');
+    waitForContent('[revoke]', 30_000, policySession);
+    waitForContent('[set]', 30_000, policySession);
+  } finally {
+    tmux('kill-session', '-t', policySession);
+    spawnSync('sleep', ['0.1']);
+  }
+}
+
 try {
   // Launch the TUI with the test provider. The pane is tall enough to hold the
   // full multi-turn transcript so the final capture shows every tool in action;
@@ -450,6 +521,9 @@ try {
 
   // === Model profiles: list, inspect, reject, switch, and capability fallback ===
   verifyModelProfiles();
+
+  // === Tool permission policies: conflict, temporary override, revocation, audit ===
+  verifyPolicyGovernance();
 
   // === Durability: terminate a live session, then resume it in a fresh process ===
 
