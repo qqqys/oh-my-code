@@ -1,0 +1,340 @@
+                                  ___  _   _     __  __            ____          _
+                                 / _ \| | | |   |  \/  | ___   _  / ___|___   __| | ___
+                                | | | | |_| |   | |\/| |/ _ \ | | |   / _ \ / _` |/ _ \
+                                | |_| |  _  |   | |  | | (_) || | |__| (_) | (_| |  __/
+                                \___/|_| |_|   |_|  |_|\___/ |_|  \____\___/ \__,_|\___|
+                                                         v0.0.0
+
+  ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │   Status                                                                                                       │
+  │                                                                                                                │
+  │   Model:      test:test-model (no key)                                                                         │
+  │   Connection: ready                                                                                            │
+  │   Repository: issue/21-make-the-tui-responsive-accessible-and-theme-aware · 1 pkg                              │
+  └────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  ─ Transcript ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+   ❯ You
+     list files in src
+
+   ⚙ Tool list_files (path: src)
+     app.ts
+     approval.ts
+     blocks.ts
+     cli.ts
+     command.ts
+     composer.ts
+     config.ts
+     context.ts
+     edit.ts
+     provider.ts
+     session.ts
+     theme.ts
+     tools.ts
+     tui.ts
+
+   ✻ Reasoning
+     I inspected the repository with list_files. The results are shown above.
+
+   ❯ You
+     read tsconfig.build.json
+
+   ⚙ Tool read_file (path: tsconfig.build.json)
+     {
+       "extends": "./tsconfig.json",
+       "compilerOptions": {
+         "noEmit": false,
+         "declaration": true,
+         "sourceMap": true,
+         "outDir": "dist",
+         "rootDir": "src"
+       },
+       "include": ["src/**/*.ts"],
+       "exclude": ["test/**/*.ts"]
+     }
+
+
+   ✻ Reasoning
+     I inspected the repository with read_file. The results are shown above.
+
+   ❯ You
+     search for launchTui
+
+   ⚙ Tool search_content (pattern: launchTui, path: .)
+     scripts/integration.mjs:208: sendKeys('search for launchTui', 'Enter');
+     src/cli.ts:19: import { launchTui } from './tui.js';
+     src/cli.ts:90: await launchTui({ version: VERSION, sessionId: id, resume: true });
+     src/cli.ts:102: await launchTui({ version: VERSION });
+     src/tui.ts:62: // deterministic under test; launchTui swaps it for the reduced-color theme when
+     src/tui.ts:642: export async function launchTui(options: TuiOptions): Promise<void> {
+     test/tools.test.ts:114: 'list_files read_file search_content launchTui\n',
+     test/tools.test.ts:116: const result = executeTool({ name: 'search_content', args: { pattern: 'launchTui', path: '
+     .' } }, workspace);
+     test/tools.test.ts:119: expect(result.output).not.toContain('launchTui');
+
+   ✻ Reasoning
+     I inspected the repository with search_content. The results are shown above.
+
+   ❯ You
+     run echo hello-allow
+
+   ⚙ Command (command: echo hello-allow)
+     hello-allow
+
+
+   ✻ Reasoning
+     I ran run_command. The results are shown above.
+
+   ❯ You
+     run echo hello-deny
+
+   ⚠ Command denied (command: echo hello-deny)
+     Denied by user.
+
+   ✻ Reasoning
+     The run_command tool could not complete: Denied by user.
+
+   ❯ You
+     run echo hello-timeout
+
+   ⚠ Command timed out (command: echo hello-timeout)
+     Approval window expired; command not run.
+
+   ✻ Reasoning
+     The run_command tool could not complete: Approval window expired; command not run.
+
+   ❯ You
+     edit omc-e2e-fixture.txt :: beta :: BETA
+
+   ✎ Edit applied (path: omc-e2e-fixture.txt)
+     - beta
+     + BETA
+
+   ✻ Reasoning
+     I proposed an edit with apply_edit. The results are shown above.
+
+   ❯ You
+     edit omc-e2e-fixture.txt :: gamma :: GAMMA
+
+   ✎ Edit rejected (path: omc-e2e-fixture.txt)
+     Rejected by user; file unchanged.
+
+   ✻ Reasoning
+     The apply_edit tool could not complete: Edit rejected by user.
+
+   ✎ Edit reverted (path: omc-e2e-fixture.txt)
+     Reverted edit to omc-e2e-fixture.txt.
+
+   ❯ You
+     show repository context in omc-e2e-repo
+
+   ⚙ Tool repo_context (path: omc-e2e-repo)
+     Repository context for /srv/qwen-products/oh-my-code/workspace/omc-e2e-repo
+
+     Instructions (resolved by scope):
+       - AGENTS.md  (scope: .)
+       - packages/api/AGENTS.md  (scope: packages/api)
+
+     Packages:
+       - .  fixture-root  [package.json]  scripts: build, test
+       - packages/api  api  [package.json]  scripts: test
+       - packages/web  web  [package.json]  scripts: build, test
+
+     Build tools: make, tsc, npm
+
+     Focused test commands:
+       - make unit
+       - make integration
+       - npm test
+       - npm test --prefix packages/api
+       - npm test --prefix packages/web
+
+     Git: branch master  ·  1 modified  ·  1 untracked  (read-only)
+       modified: packages/api/tracked.txt
+       untracked: notes.txt
+
+   ✻ Reasoning
+     I inspected the repository with repo_context. The results are shown above.
+
+   ❯ You
+     complete omc-e2e-fixture.txt :: beta :: BETA :: grep BETA omc-e2e-fixture.txt
+
+   ⚙ Tool read_file (path: omc-e2e-fixture.txt)
+     alpha
+     beta
+     gamma
+
+
+   ✎ Edit applied (path: omc-e2e-fixture.txt)
+     - beta
+     + BETA
+
+   ⚙ Command (command: grep BETA omc-e2e-fixture.txt)
+     BETA
+
+
+   ¶ Markdown
+     Coding loop complete.
+
+     Changes:
+     - Edited omc-e2e-fixture.txt with a scoped edit.
+
+     Tests:
+     - Ran `grep BETA omc-e2e-fixture.txt` -> passed.
+
+     Remaining risks:
+     - None observed; verification passed on the first attempt.
+
+     Next (user-owned):
+     - Review the diff and commit when you are satisfied.
+
+   ❯ You
+     complete omc-e2e-fixture.txt :: gamma :: GAMMA :: grep MISSING omc-e2e-fixture.txt
+
+   ⚙ Tool read_file (path: omc-e2e-fixture.txt)
+     alpha
+     BETA
+     gamma
+
+
+   ✎ Edit applied (path: omc-e2e-fixture.txt)
+     - gamma
+     + GAMMA
+
+   ⚠ Command failed (command: grep MISSING omc-e2e-fixture.txt)
+
+
+   ¶ Markdown
+     Coding loop blocked.
+
+     Changes:
+     - Edited omc-e2e-fixture.txt with a scoped edit.
+
+     Tests:
+     - Ran `grep MISSING omc-e2e-fixture.txt` -> failed (exit 1).
+
+     Remaining risks:
+     - Verification is still failing; the change may be incorrect or incomplete.
+
+     Next (user-owned):
+     - Inspect the failing output above, adjust the change, then re-run `grep MISSING omc-e2e-fixture.txt`.
+
+   ❯ You
+     explain the transcript blocks
+
+   ¶ Markdown
+     ## Overview
+
+     Here is a deterministic rich transcript used to exercise every block kind.
+
+     - Reasoning, Markdown, and code each render as a distinct, labeled block
+     - Diffs, tool output, and warnings get their own glyph and color
+     - Rapid streaming assembles these tokens without corrupting the layout
+
+     The renderer splits fenced code out of the surrounding prose so a single turn
+     shows a clear visual hierarchy instead of one wall of text.
+
+   ⌗ Code [ts]
+     │ export function add(a: number, b: number): number {
+     │  return a + b;
+     │ }
+
+   ✻ Reasoning
+     That trailing sentence has no structural markers, so it becomes a reasoning
+     block rendered just beneath the code above.
+
+   ❯ You
+     please recover from this
+
+   ✻ Reasoning
+     I received your message. Here is a deterministic streamed response for testing.
+
+
+  ─ Composer ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  ❯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                               turns: 13  ·  tokens: 2747
+         Enter send  ·  ↑↓ history  ·  Tab nav  ·  Ctrl+G regen  ·  Esc cancel  ·  Ctrl+U undo  ·  Ctrl+C exit
