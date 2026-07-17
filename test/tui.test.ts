@@ -32,7 +32,7 @@ const defaultStatus: StatusInfo = {
 
 describe('TUI screen rendering', () => {
   it('renders the logo', () => {
-    const screen = stripAnsi(renderScreen(80, 30, '0.0.0'));
+    const screen = stripAnsi(renderScreen(120, 36, '0.0.0'));
     for (const line of LOGO) {
       expect(screen).toContain(line);
     }
@@ -43,10 +43,10 @@ describe('TUI screen rendering', () => {
     expect(screen).toContain('v0.0.0');
   });
 
-  it('shows the status card with model status', () => {
+  it('shows the compact session panel with model status', () => {
     const screen = stripAnsi(renderScreen(80, 30, '0.0.0'));
-    expect(screen).toContain('Status');
-    expect(screen).toContain('Model:');
+    expect(screen).toContain('Oh My Code');
+    expect(screen).toContain('none');
     expect(screen).toContain('not connected');
   });
 
@@ -59,14 +59,12 @@ describe('TUI screen rendering', () => {
   it('shows connection state', () => {
     const status: StatusInfo = { ...defaultStatus, connection: 'streaming' };
     const screen = stripAnsi(renderScreen(80, 30, '0.0.0', [], '', 0, status));
-    expect(screen).toContain('Connection:');
     expect(screen).toContain('streaming');
   });
 
   it('shows the repository label from status', () => {
     const status: StatusInfo = { ...defaultStatus, repository: 'main · 3 pkg' };
     const screen = stripAnsi(renderScreen(80, 30, '0.0.0', [], '', 0, status));
-    expect(screen).toContain('Repository:');
     expect(screen).toContain('main · 3 pkg');
   });
 
@@ -80,12 +78,11 @@ describe('TUI screen rendering', () => {
     expect(screen).toContain('tokens: 42');
   });
 
-  it('shows empty transcript placeholder', () => {
+  it('shows a quiet first-run canvas with one contextual tip', () => {
     const screen = stripAnsi(renderScreen(80, 30, '0.0.0'));
-    expect(screen).toContain('Transcript');
-    expect(screen).toContain('Ready for your next task');
-    expect(screen).toContain('reference a file');
-    expect(screen).toContain('/workflows');
+    expect(screen).not.toContain('Transcript');
+    expect(screen).not.toContain('Ready for your next task');
+    expect(screen).toContain('Tips: use @path');
   });
 
   it('pairs the product identity and session card on wide terminals', () => {
@@ -98,14 +95,14 @@ describe('TUI screen rendering', () => {
     const screen = stripAnsi(renderScreen(120, 36, '0.0.0', [], '', 0, status));
     const firstFive = screen.split('\r\n').slice(0, 5).join('\n');
     expect(firstFive).toContain(LOGO[0]);
-    expect(firstFive).toContain('Session');
+    expect(firstFive).toContain('Oh My Code');
     expect(firstFive).toContain('qwen3.8-max');
     expect(firstFive).toContain('main · 1 pkg');
   });
 
   it('anchors the composer directly above the footer on an empty tall screen', () => {
     const lines = stripAnsi(renderScreen(120, 36, '0.0.0')).split('\r\n');
-    const askRow = lines.findIndex((line) => line.includes('❯ Ask'));
+    const askRow = lines.findIndex((line) => line.includes('Type your message'));
     const usageRow = lines.findIndex((line) => line.includes('turns: 0'));
     expect(askRow).toBeGreaterThan(20);
     expect(usageRow - askRow).toBeLessThanOrEqual(4);
@@ -197,9 +194,9 @@ describe('TUI screen rendering', () => {
     expect(screen).not.toContain('Ctrl+G regen');
   });
 
-  it('shows the composer area', () => {
+  it('shows the framed input area', () => {
     const screen = stripAnsi(renderScreen(80, 30, '0.0.0'));
-    expect(screen).toContain('Ask');
+    expect(screen).toContain('❯');
   });
 
   it('shows the composer input text', () => {
@@ -482,7 +479,7 @@ describe('responsive layout', () => {
     const screen = stripAnsi(renderScreen(60, 12, '0.0.0', longTranscript));
     const lines = screen.split('\r\n');
     expect(lines.length).toBe(12);
-    expect(screen).toContain('Ask');
+    expect(screen).toContain('Type your message');
     expect(screen).toContain('Enter');
     expect(screen).toContain('Ctrl+C');
   });
@@ -503,8 +500,7 @@ describe('responsive layout', () => {
   it('collapses the status card to a single line when short', () => {
     const status: StatusInfo = { ...defaultStatus, repository: 'main · 3 pkg' };
     const screen = stripAnsi(renderScreen(80, 12, '0.0.0', [], '', 0, status));
-    expect(screen).toContain('Model:');
-    expect(screen).toContain('Repo:');
+    expect(screen).toContain('none');
     expect(screen).toContain('main · 3 pkg');
     expect(screen).not.toContain('Repository:');
   });

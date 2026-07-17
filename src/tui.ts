@@ -93,11 +93,11 @@ export function setActiveTheme(theme: Theme): void {
 }
 
 export const LOGO = [
-  '  ___  _   _     __  __            ____          _      ',
-  ' / _ \\| | | |   |  \\/  | ___   _  / ___|___   __| | ___ ',
-  '| | | | |_| |   | |\\/| |/ _ \\ | | |   / _ \\ / _` |/ _ \\',
-  '| |_| |  _  |   | |  | | (_) || | |__| (_) | (_| |  __/',
-  ' \\___/|_| |_|   |_|  |_|\\___/ |_|  \\____\\___/ \\__,_|\\___|',
+  '███ █ █  █   █ █ █   ███ ███ ██  ███',
+  '█ █ █ █  ██ ██ █ █   █   █ █ █ █ █  ',
+  '█ █ ███  █ █ █  █    █   █ █ █ █ ██ ',
+  '█ █ █ █  █   █  █    █   █ █ █ █ █  ',
+  '███ █ █  █   █  █    ███ ███ ██  ███',
 ];
 
 // The widest logo line; below this width the ASCII logo is replaced by a compact
@@ -201,15 +201,19 @@ function center(text: string, width: number): string {
   return ' '.repeat(left) + text;
 }
 
-function sessionCard(width: number, status: StatusInfo): string[] {
+function sessionCard(width: number, version: string, status: StatusInfo): string[] {
   const inner = Math.max(1, width - 4);
-  const rule = '─'.repeat(Math.max(0, inner - 9));
+  const row = (content: string): string => {
+    const clipped = clipToWidth(content, inner);
+    return `${fg.blue('│')} ${pad(clipped, inner)} ${fg.blue('│')}`;
+  };
   return [
-    fg.blue(`╭─ Session ${rule}╮`),
-    fg.blue(`│ ${pad(clipToWidth(`Model: ${status.model}`, inner), inner)} │`),
-    fg.blue(`│ ${pad(clipToWidth(`Connection: ${stripAnsi(connectionLabel(status.connection))}`, inner), inner)} │`),
-    fg.blue(`│ ${pad(clipToWidth(`Repository: ${status.repository ?? 'none'}`, inner), inner)} │`),
-    fg.blue(`╰${'─'.repeat(inner + 2)}╯`),
+    fg.blue(`┌${'─'.repeat(inner + 2)}┐`),
+    row(`${fg.bold('>_ Oh My Code')}  ${fg.dim(`(v${version})`)}`),
+    row(`Model: ${status.model}  (/model to change)`),
+    row(`Connection: ${stripAnsi(connectionLabel(status.connection))}`),
+    row(`Repository: ${status.repository ?? 'none'}`),
+    fg.blue(`└${'─'.repeat(inner + 2)}┘`),
   ];
 }
 
@@ -231,7 +235,7 @@ function wrapText(text: string, maxWidth: number): string[] {
 function renderComposerLine(input: string, cursor: number, prompt: string): string {
   const points = Array.from(input);
   if (points.length === 0) {
-    return `  ${fg.green(prompt)} ${fg.reverse(' ')}`;
+    return `  ${fg.green(prompt)} ${fg.reverse(' ')}${fg.dim(' Type your message or @path/to/file')}`;
   }
   const before = points.slice(0, cursor).join('');
   const at = points[cursor] ?? ' ';
@@ -439,38 +443,31 @@ export function renderScreen(
 ): string {
   const header: string[] = [];
 
-  // Wide terminals pair product identity with live session state. Narrow
-  // terminals keep the same information in a compact stacked summary.
-  const showLogo = width >= LOGO_WIDTH && height >= LOGO_MIN_HEIGHT;
-  if (showLogo && width >= HERO_SIDE_BY_SIDE_MIN_WIDTH) {
+  // Qwen-style header: expressive product identity beside one restrained
+  // session panel. Decoration disappears before conversation space.
+  const showLogo =
+    width >= LOGO_WIDTH &&
+    width >= HERO_SIDE_BY_SIDE_MIN_WIDTH &&
+    height >= LOGO_MIN_HEIGHT;
+  if (showLogo) {
     const leftWidth = LOGO_WIDTH;
     const cardWidth = Math.max(36, width - leftWidth - 7);
-    const card = sessionCard(cardWidth, status);
+    const card = sessionCard(cardWidth, version, status);
     for (let index = 0; index < LOGO.length; index += 1) {
-      const logo = fg.cyan(fg.bold(LOGO[index] ?? ''));
+      const logoColor = index < 2 ? fg.cyan : fg.magenta;
+      const logo = logoColor(fg.bold(LOGO[index] ?? ''));
       header.push(`  ${pad(logo, leftWidth)}   ${card[index] ?? ''}`);
     }
-    header.push(`  ${fg.dim(`v${version}  ·  terminal-native coding agent`)}`);
-  } else if (showLogo) {
-    for (const line of LOGO) {
-      header.push(`  ${fg.cyan(fg.bold(line))}`);
-    }
-    header.push(`  ${fg.dim(`v${version}  ·  terminal-native coding agent`)}`);
-    header.push(`  ${fg.bold('Status')}  ·  Model: ${status.model}`);
-    header.push(
-      `  Connection: ${connectionLabel(status.connection)}  ·  Repository: ${status.repository ?? fg.dim('none')}`,
-    );
+    header.push(`  ${' '.repeat(leftWidth)}   ${card[5] ?? ''}`);
+    header.push(`  ${fg.dim('Tips: use @path to add files, or /help to browse commands.')}`);
   } else {
     const repo = status.repository ?? 'none';
     header.push(`  ${fg.cyan(fg.bold('Oh My Code'))} ${fg.dim(`v${version}`)}`);
-    header.push(
-      `  ${fg.bold('Status')}  Model: ${status.model}  ·  ${connectionLabel(status.connection)}  ·  Repo: ${repo}`,
-    );
+    header.push(`  ${fg.dim(`${status.model}  ·  ${stripAnsi(connectionLabel(status.connection))}  ·  ${repo}`)}`);
+    if (height >= 16) {
+      header.push(`  ${fg.dim('Tips: use @path to add files, or /help to browse commands.')}`);
+    }
   }
-  header.push('');
-
-  // Transcript header
-  header.push(`  ${fg.gray('─ Transcript ' + '─'.repeat(Math.max(0, width - 16)))}`);
   header.push('');
 
   // Transcript body: every message becomes one or more typed blocks (reasoning,
@@ -481,10 +478,6 @@ export function renderScreen(
   const blockStart: number[] = [];
   const transcriptWidth = width - 6;
   if (messages.length === 0 && status.streamingText.length === 0 && status.error === null) {
-    body.push(`  ${fg.cyan(fg.bold('Ready for your next task'))}`);
-    body.push(`  ${fg.dim('Ask a question, reference a file, or type /help to explore capabilities.')}`);
-    body.push('');
-    body.push(`  ${fg.dim('/model  switch profile    /status  inspect session    /workflows  orchestrate')}`);
     body.push('');
   } else {
     const blocks: Block[] = [];
@@ -521,11 +514,9 @@ export function renderScreen(
             '',
           ]
         : [
-            '',
-            `  ${fg.cyan('❯ Ask · Composer ')}${fg.gray('─'.repeat(Math.max(0, width - 19)))}`,
-            '',
+            `  ${fg.cyan('─'.repeat(Math.max(0, width - 4)))}`,
             renderComposerLine(composerInput, composerCursor, '❯'),
-            '',
+            `  ${fg.cyan('─'.repeat(Math.max(0, width - 4)))}`,
           ];
   const footerHints =
     approval !== null
@@ -537,7 +528,9 @@ export function renderScreen(
   if (status.statusMessage !== undefined && status.statusMessage.length > 0) {
     footer.push(`  ${fg.green(status.statusMessage)}`);
   }
-  footer.push(`  ${usageLabel(status.usage)}`);
+  footer.push(
+    `  ${fg.dim(`${status.repository ?? 'no repository'}  ·  ${status.model}`)}  ${usageLabel(status.usage)}`,
+  );
   // Wrap the hints so a narrow terminal keeps every shortcut on-screen instead
   // of clipping the later ones.
   for (const line of wrapHints(footerHints, width - 2)) {

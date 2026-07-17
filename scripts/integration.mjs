@@ -131,10 +131,10 @@ function verifyResponsiveMatrix() {
         throw new Error(started.stderr || `Unable to start matrix session ${size.name}/${color.name}`);
       }
       try {
-        waitForContent('Composer', 30_000, matrixSession);
+        waitForContent('Type your message or @path/to/file', 30_000, matrixSession);
         const plain = capturePane(matrixSession);
         // The composer and footer are essential and stay on-screen at every size.
-        if (!plain.includes('Composer')) {
+        if (!plain.includes('Type your message or @path/to/file')) {
           throw new Error(`matrix ${size.name}/${color.name}: composer missing`);
         }
         if (!plain.includes('Ctrl+C')) {
@@ -180,7 +180,7 @@ function verifyModelProfiles() {
     }
   };
   try {
-    waitForContent('Composer', 30_000, modelSession);
+    waitForContent('Type your message or @path/to/file', 30_000, modelSession);
 
     // Listing shows every validated profile with the active one marked.
     send('/model list', 'Enter');
@@ -250,7 +250,7 @@ function verifyPolicyGovernance() {
     }
   };
   try {
-    waitForContent('Composer', 30_000, policySession);
+    waitForContent('Type your message or @path/to/file', 30_000, policySession);
 
     // A user deny and a conflicting project allow for the same command.
     send('/policy set user deny git push', 'Enter');
@@ -330,7 +330,7 @@ function verifyGitHandoff() {
     }
   };
   try {
-    waitForContent('Composer', 30_000, handoffSession);
+    waitForContent('Type your message or @path/to/file', 30_000, handoffSession);
 
     // Clean tree: nothing to hand off, and a commit fails closed.
     send('/handoff', 'Enter');
@@ -416,7 +416,7 @@ function verifyContextCompaction() {
     }
   };
   try {
-    waitForContent('Composer', 30_000, compactSession);
+    waitForContent('Type your message or @path/to/file', 30_000, compactSession);
 
     // Build a small but real transcript: an applied edit and a denied command.
     writeFileSync(fixturePath, fixtureOriginal, 'utf8');
@@ -520,8 +520,8 @@ try {
   }
 
   // Wait for the TUI to render
-  waitForContent('Composer');
-  waitForContent('Transcript');
+  waitForContent('Type your message or @path/to/file');
+  waitForContent('Tips: use @path');
 
   // Verify model identity and connection state are shown
   const initial = capturePane();
@@ -783,7 +783,7 @@ try {
   }
 
   // The full transcript is restored, including usage from all thirteen turns.
-  waitForContent('Transcript');
+  waitForContent('Type your message or @path/to/file');
   waitForContent('turns: 13');
   waitForContent('list_files');
   waitForContent('Coding loop blocked');
