@@ -293,6 +293,98 @@ function verifyPolicyGovernance() {
   }
 }
 
+// Verify the Git handoff in an isolated session pointed at a throwaway repo: a
+// clean tree reports nothing to hand off, then an agent edit is distinguished
+// from a pre-existing untracked file, and /handoff commit stages and commits
+// only the agent-owned file, leaving the unrelated file untouched. The CLI runs
+// with the temp repo as its working directory so the handoff never touches the
+// real repository.
+function verifyGitHandoff() {
+  const handoffSession = `${session}-handoff`;
+  const handoffRepo = join(temporaryDirectory, 'handoff-repo');
+  rmSync(handoffRepo, { recursive: true, force: true });
+  mkdirSync(handoffRepo, { recursive: true });
+  const git = (...args) => {
+    const result = spawnSync('git', ['-C', handoffRepo, ...args], { encoding: 'utf8' });
+    if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`);
+    return result.stdout.trim();
+  };
+  git('init');
+  git('config', 'user.email', 'e2e@example.com');
+  git('config', 'user.name', 'E2E Bot');
+  // Ignore the CLI's own session/state dir so the working tree reads as clean.
+  writeFileSync(join(handoffRepo, '.gitignore'), '.omc/\n', 'utf8');
+  writeFileSync(join(handoffRepo, 'agent.txt'), 'base\n', 'utf8');
+  git('add', '.gitignore', 'agent.txt');
+  git('commit', '-m', 'base');
+
+  const cmd = `env OMC_PROVIDER=test OMC_APPROVAL_TIMEOUT_MS=2000 ${JSON.stringify(nodeBin)} ${JSON.stringify(cli)}`;
+  const started = tmux('new-session', '-d', '-x', '120', '-y', '40', '-c', handoffRepo, '-s', handoffSession, cmd);
+  if (started.status !== 0) {
+    throw new Error(started.stderr || 'Unable to start handoff session');
+  }
+  const send = (...keys) => {
+    for (const key of keys) {
+      const result = tmux('send-keys', '-t', handoffSession, key);
+      if (result.status !== 0) throw new Error(result.stderr || `Failed to send key: ${key}`);
+    }
+  };
+  try {
+    waitForContent('Composer', 30_000, handoffSession);
+
+    // Clean tree: nothing to hand off, and a commit fails closed.
+    send('/handoff', 'Enter');
+    waitForContent('Nothing to hand off', 30_000, handoffSession);
+    spawnSync('sleep', ['0.3']);
+    send('/handoff commit', 'Enter');
+    waitForContent('no agent-owned changes to commit', 30_000, handoffSession);
+
+    // Introduce a pre-existing untracked file the agent never touches.
+    writeFileSync(join(handoffRepo, 'preexisting.txt'), 'user work\n', 'utf8');
+
+    // The agent edits a tracked file through the diff-review boundary.
+    spawnSync('sleep', ['0.3']);
+    send('edit agent.txt :: base :: AGENT', 'Enter');
+    waitForContent('Edit proposed', 30_000, handoffSession);
+    send('y');
+    waitForContent('Edit applied', 30_000, handoffSession);
+
+    // The handoff distinguishes agent-owned from pre-existing changes.
+    spawnSync('sleep', ['0.5']);
+    send('/handoff', 'Enter');
+    waitForContent('Agent-owned changes (1)', 30_000, handoffSession);
+    waitForContent('agent.txt', 30_000, handoffSession);
+    waitForContent('Pre-existing changes', 30_000, handoffSession);
+    waitForContent('preexisting.txt', 30_000, handoffSession);
+
+    // Committing stages and commits only the agent-owned file.
+    spawnSync('sleep', ['0.3']);
+    send('/handoff commit', 'Enter');
+    waitForContent('committed 1 agent-owned file', 30_000, handoffSession);
+
+    // The agent file is committed; the unrelated file remains untracked, and the
+    // commit carries the conventional handoff message.
+    const statusAfter = spawnSync('git', ['-C', handoffRepo, 'status', '--porcelain'], {
+      encoding: 'utf8',
+    }).stdout;
+    if (statusAfter.includes('agent.txt')) {
+      throw new Error('agent-owned file should have been committed');
+    }
+    if (!statusAfter.includes('preexisting.txt')) {
+      throw new Error('pre-existing file must remain uncommitted');
+    }
+    const subject = spawnSync('git', ['-C', handoffRepo, 'log', '-1', '--format=%s'], {
+      encoding: 'utf8',
+    }).stdout;
+    if (!subject.includes('handoff')) {
+      throw new Error('commit message should follow the conventional handoff proposal');
+    }
+  } finally {
+    tmux('kill-session', '-t', handoffSession);
+    spawnSync('sleep', ['0.1']);
+  }
+}
+
 try {
   // Launch the TUI with the test provider. The pane is tall enough to hold the
   // full multi-turn transcript so the final capture shows every tool in action;
@@ -524,6 +616,9 @@ try {
 
   // === Tool permission policies: conflict, temporary override, revocation, audit ===
   verifyPolicyGovernance();
+
+  // === Git handoff: clean tree, agent-owned vs pre-existing, scoped commit ===
+  verifyGitHandoff();
 
   // === Durability: terminate a live session, then resume it in a fresh process ===
 

@@ -181,6 +181,12 @@ function toolBlock(message: TranscriptMessage): Block {
     return { kind: 'tool', header: `Policy${args}`, lines: splitLines(message.text) };
   }
 
+  // Local /handoff command output: a labeled notice kept out of the model
+  // context, like /model and /policy.
+  if (message.toolName === 'handoff') {
+    return { kind: 'tool', header: `Handoff${args}`, lines: splitLines(message.text) };
+  }
+
   const block: Block = { kind: 'tool', header: `Tool ${name}${args}`, lines: splitLines(message.text) };
   if (message.truncated === true) block.truncated = true;
   return block;
