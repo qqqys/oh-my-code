@@ -25,6 +25,7 @@ const PROTECTED_DIRS = new Set([
   '.qwen',
   '.local',
   '.autonomy',
+  '.omc',
   'dist',
   'coverage',
   'artifacts',

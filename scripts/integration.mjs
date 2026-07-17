@@ -50,7 +50,7 @@ try {
   // Launch the TUI with the test provider. The pane is tall enough to hold the
   // full three-turn transcript so the final capture shows every tool in action;
   // a shorter pane would scroll the earlier turns off-screen.
-  const launchCmd = `env OMC_PROVIDER=test ${JSON.stringify(nodeBin)} ${JSON.stringify(cli)}`;
+  const launchCmd = `env OMC_PROVIDER=test OMC_APPROVAL_TIMEOUT_MS=2000 ${JSON.stringify(nodeBin)} ${JSON.stringify(cli)}`;
   const started = tmux('new-session', '-d', '-x', '120', '-y', '75', '-s', session, launchCmd);
   if (started.status !== 0) {
     throw new Error(started.stderr || 'Unable to start tmux integration session');
@@ -92,13 +92,39 @@ try {
   waitForContent('src/tui.ts');
   waitForContent('ready');
 
-  // Verify usage reflects three completed turns (footer stays pinned on-screen)
-  const finalScreen = waitForContent('turns: 3');
+  // === Turn 4: run a command through the approval boundary (allow once) ===
+  spawnSync('sleep', ['0.3']);
+  sendKeys('run echo hello-allow', 'Enter');
+  // The approval card blocks execution until a decision is recorded
+  waitForContent('Approval required');
+  waitForContent('Risk:');
+  sendKeys('y');
+  waitForContent('hello-allow');
+  waitForContent('ready');
 
-  // All three tools must be visible in the final transcript
-  for (const tool of ['list_files', 'read_file', 'search_content']) {
-    if (!finalScreen.includes(tool)) {
-      throw new Error(`Expected tool ${tool} in final transcript`);
+  // === Turn 5: deny a command ===
+  spawnSync('sleep', ['0.3']);
+  sendKeys('run echo hello-deny', 'Enter');
+  waitForContent('Approval required');
+  sendKeys('n');
+  waitForContent('Command denied');
+  waitForContent('ready');
+
+  // === Turn 6: let the approval window time out ===
+  spawnSync('sleep', ['0.3']);
+  sendKeys('run echo hello-timeout', 'Enter');
+  waitForContent('Approval required');
+  // No decision is sent; the approval auto-denies after the timeout
+  waitForContent('Command timed out');
+  waitForContent('ready');
+
+  // Verify usage reflects all six completed turns (footer stays pinned on-screen)
+  const finalScreen = waitForContent('turns: 6');
+
+  // The allow, deny, and timeout paths must each be visible in the transcript
+  for (const token of ['hello-allow', 'Command denied', 'Command timed out']) {
+    if (!finalScreen.includes(token)) {
+      throw new Error(`Expected ${token} in final transcript`);
     }
   }
 

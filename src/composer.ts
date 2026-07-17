@@ -1,9 +1,12 @@
+export type CommandOutcome = 'ok' | 'non-zero' | 'timeout' | 'cancelled' | 'denied';
+
 export interface TranscriptMessage {
   role: 'user' | 'assistant' | 'tool';
   text: string;
   toolName?: string;
   toolArgs?: string;
   truncated?: boolean;
+  outcome?: CommandOutcome;
 }
 
 export class ComposerState {
