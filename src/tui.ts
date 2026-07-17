@@ -16,6 +16,8 @@ import {
   type PolicyDecision,
   type PolicyScope,
 } from './policy.js';
+import { commitRepo, createBranch, stageFiles } from './git.js';
+import { formatHandoffSummary, summarizeHandoff } from './handoff.js';
 import {
   blockBodyLines,
   blockGlyph,
@@ -739,6 +741,10 @@ export async function launchTui(options: TuiOptions): Promise<void> {
 
   const approvalStore = ApprovalStore.load(defaultApprovalPath(workspace));
   const policyStore = PolicyStore.load(defaultPolicyPaths(workspace));
+  // Files this session has edited, tracked (relative to the workspace) so a Git
+  // handoff can stage only the agent's own work and leave pre-existing changes
+  // untouched. Populated as edits are applied below.
+  const agentTouchedFiles = new Set<string>();
   const approvalTimeoutMs = parseTimeoutEnv(process.env['OMC_APPROVAL_TIMEOUT_MS'], 30_000);
   const commandTimeoutMs = parseTimeoutEnv(process.env['OMC_COMMAND_TIMEOUT_MS'], 120_000);
   let pendingApproval:
@@ -1055,6 +1061,7 @@ export async function launchTui(options: TuiOptions): Promise<void> {
     const committed = commitEdit(prepared.operation);
     if (committed.status === 'applied') {
       lastEdit = committed.operation;
+      agentTouchedFiles.add(committed.operation.relativePath);
       const summary = `Applied edit to ${committed.operation.relativePath}.`;
       pushEditMessage('applied', argsLabel, summary, prepared.diff);
       return { name: 'apply_edit', output: summary, truncated: false, error: null };
@@ -1267,8 +1274,10 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       runModelCommand(args);
     } else if (command === '/policy') {
       runPolicyCommand(args);
+    } else if (command === '/handoff') {
+      runHandoffCommand(args);
     } else {
-      pushModelNotice(`Unknown command: ${command}. Available: /model, /policy.`, text);
+      pushModelNotice(`Unknown command: ${command}. Available: /model, /policy, /handoff.`, text);
     }
     return true;
   }
@@ -1279,6 +1288,94 @@ export async function launchTui(options: TuiOptions): Promise<void> {
 
   function pushPolicyNotice(output: string, args: string): void {
     composer.messages.push({ role: 'tool', text: output, toolName: 'policy', toolArgs: args, truncated: false });
+  }
+
+  function pushHandoffNotice(output: string, args: string): void {
+    composer.messages.push({ role: 'tool', text: output, toolName: 'handoff', toolArgs: args, truncated: false });
+  }
+
+  function runHandoffCommand(args: string): void {
+    const body = args.trim();
+    const parts = body.split(/\s+/).filter((part) => part.length > 0);
+    const sub = (parts[0] ?? '').toLowerCase();
+
+    if (sub === '' || sub === 'status') {
+      pushHandoffNotice(formatHandoffSummary(summarizeHandoff(workspace, agentTouchedFiles)), sub);
+      return;
+    }
+    if (sub === 'commit') {
+      commitHandoff();
+      return;
+    }
+    if (sub === 'branch') {
+      const name = parts.slice(1).join(' ');
+      if (name.length === 0) {
+        pushHandoffNotice('Usage: /handoff branch <name>', 'branch');
+        return;
+      }
+      const result = createBranch(workspace, name);
+      pushHandoffNotice(
+        result.ok
+          ? `Created and switched to branch: ${name}`
+          : `Could not create branch: ${result.output}`,
+        `branch ${name}`,
+      );
+      return;
+    }
+    pushHandoffNotice(
+      [
+        'Git handoff commands:',
+        '  /handoff                summarize agent-owned vs pre-existing changes',
+        '  /handoff commit         stage and commit only the agent-owned files',
+        '  /handoff branch <name>  create and switch to a branch first',
+      ].join('\n'),
+      'help',
+    );
+  }
+
+  // Stage and commit only the files this session edited, after the operator has
+  // reviewed the /handoff summary. Refuses on a detached HEAD or with unresolved
+  // conflicts, and reports Git's own output on any failure so the tree is left
+  // in a recoverable state rather than half-committed.
+  function commitHandoff(): void {
+    const summary = summarizeHandoff(workspace, agentTouchedFiles);
+    if (!summary.isRepo) {
+      pushHandoffNotice('Git handoff: not a Git repository.', 'commit');
+      return;
+    }
+    if (summary.detached) {
+      pushHandoffNotice(
+        'Git handoff: DETACHED HEAD — run /handoff branch <name> before committing.',
+        'commit',
+      );
+      return;
+    }
+    if (summary.conflicted.length > 0) {
+      pushHandoffNotice(
+        `Git handoff: resolve ${summary.conflicted.length} conflict(s) before committing.`,
+        'commit',
+      );
+      return;
+    }
+    if (summary.agentOwned.length === 0) {
+      pushHandoffNotice('Git handoff: no agent-owned changes to commit.', 'commit');
+      return;
+    }
+    const files = summary.agentOwned.map((change) => change.path);
+    const staged = stageFiles(workspace, files);
+    if (!staged.ok) {
+      pushHandoffNotice(`Git handoff: staging failed.\n${staged.output}`, 'commit');
+      return;
+    }
+    const committed = commitRepo(workspace, summary.proposal);
+    if (!committed.ok) {
+      pushHandoffNotice(`Git handoff: commit failed; nothing was lost.\n${committed.output}`, 'commit');
+      return;
+    }
+    pushHandoffNotice(
+      `Git handoff: committed ${files.length} agent-owned file(s).\n${committed.output}`,
+      'commit',
+    );
   }
 
   function runPolicyCommand(args: string): void {
