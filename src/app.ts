@@ -11,6 +11,12 @@ export function helpText(): string {
     '  -h, --help     Show help',
     '  -v, --version  Show version',
     '',
+    'Commands:',
+    '  sessions list             List saved sessions',
+    '  sessions show <id>        Show a saved session transcript',
+    '  sessions resume <id>      Resume an interrupted session',
+    '  sessions delete <id>      Delete a saved session',
+    '',
     'Run without options to launch the interactive terminal.',
   ].join('\n');
 }
