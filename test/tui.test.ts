@@ -83,7 +83,32 @@ describe('TUI screen rendering', () => {
   it('shows empty transcript placeholder', () => {
     const screen = stripAnsi(renderScreen(80, 30, '0.0.0'));
     expect(screen).toContain('Transcript');
-    expect(screen).toContain('No messages yet.');
+    expect(screen).toContain('Ready for your next task');
+    expect(screen).toContain('reference a file');
+    expect(screen).toContain('/workflows');
+  });
+
+  it('pairs the product identity and session card on wide terminals', () => {
+    const status: StatusInfo = {
+      ...defaultStatus,
+      model: 'qwen3.8-max',
+      connection: 'done',
+      repository: 'main · 1 pkg',
+    };
+    const screen = stripAnsi(renderScreen(120, 36, '0.0.0', [], '', 0, status));
+    const firstFive = screen.split('\r\n').slice(0, 5).join('\n');
+    expect(firstFive).toContain(LOGO[0]);
+    expect(firstFive).toContain('Session');
+    expect(firstFive).toContain('qwen3.8-max');
+    expect(firstFive).toContain('main · 1 pkg');
+  });
+
+  it('anchors the composer directly above the footer on an empty tall screen', () => {
+    const lines = stripAnsi(renderScreen(120, 36, '0.0.0')).split('\r\n');
+    const askRow = lines.findIndex((line) => line.includes('❯ Ask'));
+    const usageRow = lines.findIndex((line) => line.includes('turns: 0'));
+    expect(askRow).toBeGreaterThan(20);
+    expect(usageRow - askRow).toBeLessThanOrEqual(4);
   });
 
   it('shows submitted user messages in the transcript', () => {
@@ -174,7 +199,7 @@ describe('TUI screen rendering', () => {
 
   it('shows the composer area', () => {
     const screen = stripAnsi(renderScreen(80, 30, '0.0.0'));
-    expect(screen).toContain('Composer');
+    expect(screen).toContain('Ask');
   });
 
   it('shows the composer input text', () => {
@@ -457,7 +482,7 @@ describe('responsive layout', () => {
     const screen = stripAnsi(renderScreen(60, 12, '0.0.0', longTranscript));
     const lines = screen.split('\r\n');
     expect(lines.length).toBe(12);
-    expect(screen).toContain('Composer');
+    expect(screen).toContain('Ask');
     expect(screen).toContain('Enter');
     expect(screen).toContain('Ctrl+C');
   });

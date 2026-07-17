@@ -109,7 +109,7 @@ const LOGO_WIDTH = LOGO.reduce((max, line) => Math.max(max, Array.from(line).len
 // status card (7 rows) are dropped first so the transcript keeps room even on a
 // classic 80x24 terminal. Below the card threshold a one-line status replaces it.
 const LOGO_MIN_HEIGHT = 28;
-const STATUS_CARD_MIN_HEIGHT = 24;
+const HERO_SIDE_BY_SIDE_MIN_WIDTH = 108;
 
 export type ConnectionState = 'idle' | 'connecting' | 'streaming' | 'done' | 'error';
 
@@ -201,8 +201,16 @@ function center(text: string, width: number): string {
   return ' '.repeat(left) + text;
 }
 
-function boxLine(left: string, content: string, right: string, innerWidth: number): string {
-  return `  ${left} ${pad(clipToWidth(content, innerWidth), innerWidth)} ${right}`;
+function sessionCard(width: number, status: StatusInfo): string[] {
+  const inner = Math.max(1, width - 4);
+  const rule = '─'.repeat(Math.max(0, inner - 9));
+  return [
+    fg.blue(`╭─ Session ${rule}╮`),
+    fg.blue(`│ ${pad(clipToWidth(`Model: ${status.model}`, inner), inner)} │`),
+    fg.blue(`│ ${pad(clipToWidth(`Connection: ${stripAnsi(connectionLabel(status.connection))}`, inner), inner)} │`),
+    fg.blue(`│ ${pad(clipToWidth(`Repository: ${status.repository ?? 'none'}`, inner), inner)} │`),
+    fg.blue(`╰${'─'.repeat(inner + 2)}╯`),
+  ];
 }
 
 function wrapText(text: string, maxWidth: number): string[] {
@@ -431,32 +439,30 @@ export function renderScreen(
 ): string {
   const header: string[] = [];
 
-  // Identity: the full ASCII logo only when there is room; otherwise a compact
-  // one-line title keeps the header small on narrow or short terminals.
+  // Wide terminals pair product identity with live session state. Narrow
+  // terminals keep the same information in a compact stacked summary.
   const showLogo = width >= LOGO_WIDTH && height >= LOGO_MIN_HEIGHT;
-  if (showLogo) {
-    for (const line of LOGO) {
-      header.push(center(fg.cyan(fg.bold(line)), width));
+  if (showLogo && width >= HERO_SIDE_BY_SIDE_MIN_WIDTH) {
+    const leftWidth = LOGO_WIDTH;
+    const cardWidth = Math.max(36, width - leftWidth - 7);
+    const card = sessionCard(cardWidth, status);
+    for (let index = 0; index < LOGO.length; index += 1) {
+      const logo = fg.cyan(fg.bold(LOGO[index] ?? ''));
+      header.push(`  ${pad(logo, leftWidth)}   ${card[index] ?? ''}`);
     }
-    header.push(center(fg.dim(`v${version}`), width));
-  } else {
-    header.push(`  ${fg.cyan(fg.bold('Oh My Code'))} ${fg.dim(`v${version}`)}`);
-  }
-  header.push('');
-
-  // Status: a boxed card when tall enough, otherwise a single clipped line so
-  // model/connection/repository remain visible without consuming the transcript.
-  if (height >= STATUS_CARD_MIN_HEIGHT) {
-    const cardInner = width > 10 ? width - 10 : 1;
-    header.push(`  ${fg.blue('┌' + '─'.repeat(cardInner + 2) + '┐')}`);
-    header.push(fg.blue(boxLine('│', fg.bold('  Status'), '│', cardInner)));
-    header.push(fg.blue(boxLine('│', '', '│', cardInner)));
-    header.push(fg.blue(boxLine('│', `  Model:      ${status.model}`, '│', cardInner)));
-    header.push(fg.blue(boxLine('│', `  Connection: ${connectionLabel(status.connection)}`, '│', cardInner)));
-    header.push(fg.blue(boxLine('│', `  Repository: ${status.repository ?? fg.dim('none')}`, '│', cardInner)));
-    header.push(`  ${fg.blue('└' + '─'.repeat(cardInner + 2) + '┘')}`);
+    header.push(`  ${fg.dim(`v${version}  ·  terminal-native coding agent`)}`);
+  } else if (showLogo) {
+    for (const line of LOGO) {
+      header.push(`  ${fg.cyan(fg.bold(line))}`);
+    }
+    header.push(`  ${fg.dim(`v${version}  ·  terminal-native coding agent`)}`);
+    header.push(`  ${fg.bold('Status')}  ·  Model: ${status.model}`);
+    header.push(
+      `  Connection: ${connectionLabel(status.connection)}  ·  Repository: ${status.repository ?? fg.dim('none')}`,
+    );
   } else {
     const repo = status.repository ?? 'none';
+    header.push(`  ${fg.cyan(fg.bold('Oh My Code'))} ${fg.dim(`v${version}`)}`);
     header.push(
       `  ${fg.bold('Status')}  Model: ${status.model}  ·  ${connectionLabel(status.connection)}  ·  Repo: ${repo}`,
     );
@@ -475,7 +481,10 @@ export function renderScreen(
   const blockStart: number[] = [];
   const transcriptWidth = width - 6;
   if (messages.length === 0 && status.streamingText.length === 0 && status.error === null) {
-    body.push(center(fg.dim('No messages yet.'), width));
+    body.push(`  ${fg.cyan(fg.bold('Ready for your next task'))}`);
+    body.push(`  ${fg.dim('Ask a question, reference a file, or type /help to explore capabilities.')}`);
+    body.push('');
+    body.push(`  ${fg.dim('/model  switch profile    /status  inspect session    /workflows  orchestrate')}`);
     body.push('');
   } else {
     const blocks: Block[] = [];
@@ -513,7 +522,7 @@ export function renderScreen(
           ]
         : [
             '',
-            `  ${fg.gray('─ Composer ' + '─'.repeat(Math.max(0, width - 14)))}`,
+            `  ${fg.cyan('❯ Ask · Composer ')}${fg.gray('─'.repeat(Math.max(0, width - 19)))}`,
             '',
             renderComposerLine(composerInput, composerCursor, '❯'),
             '',
@@ -526,13 +535,13 @@ export function renderScreen(
         : actionHints(status, nav.selectedBlock);
   const footer: string[] = [];
   if (status.statusMessage !== undefined && status.statusMessage.length > 0) {
-    footer.push(center(fg.green(status.statusMessage), width));
+    footer.push(`  ${fg.green(status.statusMessage)}`);
   }
-  footer.push(center(usageLabel(status.usage), width));
+  footer.push(`  ${usageLabel(status.usage)}`);
   // Wrap the hints so a narrow terminal keeps every shortcut on-screen instead
   // of clipping the later ones.
   for (const line of wrapHints(footerHints, width - 2)) {
-    footer.push(center(fg.dim(line), width));
+    footer.push(`  ${fg.dim(line)}`);
   }
 
   // The composer and footer are essential and pinned to the bottom. Trim blank
@@ -564,10 +573,14 @@ export function renderScreen(
   } else if (available > 0) {
     lines.push(...body);
   }
-  lines.push(...composer);
-  while (lines.length < height - footer.length) {
+  // Empty transcript space belongs above the action band. Filling before the
+  // composer keeps input and shortcuts physically anchored together at the
+  // bottom instead of leaving the composer floating in the middle.
+  const composerStart = height - composer.length - footer.length;
+  while (lines.length < composerStart) {
     lines.push('');
   }
+  lines.push(...composer);
   lines.push(...footer);
 
   // Pad every line to full width so a redraw fully overwrites the prior frame
