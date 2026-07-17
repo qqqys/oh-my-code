@@ -1,3 +1,5 @@
+import type { DiffLine } from './edit.js';
+
 export type CommandOutcome = 'ok' | 'non-zero' | 'timeout' | 'cancelled' | 'denied';
 
 export type EditOutcome = 'applied' | 'rejected' | 'reverted' | 'conflict';
@@ -10,6 +12,9 @@ export interface TranscriptMessage {
   truncated?: boolean;
   outcome?: CommandOutcome;
   editOutcome?: EditOutcome;
+  // The diff for an applied edit, kept so the transcript can render a real diff
+  // block after the change is committed (not just the apply summary).
+  diff?: DiffLine[];
 }
 
 export class ComposerState {

@@ -43,6 +43,32 @@ const TEST_RESPONSE = [
   '.',
 ];
 
+// A rich, multi-block answer used to exercise the transcript's block rendering:
+// a Markdown section, a fenced code block, and a trailing reasoning summary all
+// arrive from one turn. Built from lines so the triple-backtick fence does not
+// clash with a template literal.
+const RICH_RESPONSE = [
+  '## Overview',
+  '',
+  'Here is a deterministic rich transcript used to exercise every block kind.',
+  '',
+  '- Reasoning, Markdown, and code each render as a distinct, labeled block',
+  '- Diffs, tool output, and warnings get their own glyph and color',
+  '- Rapid streaming assembles these tokens without corrupting the layout',
+  '',
+  'The renderer splits fenced code out of the surrounding prose so a single turn',
+  'shows a clear visual hierarchy instead of one wall of text.',
+  '',
+  '```ts',
+  'export function add(a: number, b: number): number {',
+  '  return a + b;',
+  '}',
+  '```',
+  '',
+  'That trailing sentence has no structural markers, so it becomes a reasoning',
+  'block rendered just beneath the code above.',
+].join('\n');
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -195,6 +221,13 @@ class TestProvider implements Provider {
     const plan = extractCompletePlan(last.text);
     if (plan !== null) {
       yield* this.runCodingLoop(plan, messages, signal);
+      return;
+    }
+
+    // A "explain/document/describe ..." request returns a rich multi-block answer
+    // so one turn exercises the Markdown, code, and reasoning block renderers.
+    if (/\b(?:explain|document|describe)\b/.test(last.text.toLowerCase())) {
+      yield* this.streamText(RICH_RESPONSE, messages, signal);
       return;
     }
 

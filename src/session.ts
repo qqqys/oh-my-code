@@ -2,6 +2,7 @@ import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { join } from 'node:path';
 
 import type { TranscriptMessage } from './composer.js';
+import type { DiffLine } from './edit.js';
 
 // Bump when the on-disk session shape changes in a way an older build cannot
 // safely read. A mismatch fails closed with recovery guidance rather than
@@ -110,6 +111,17 @@ function parseMessage(value: unknown): TranscriptMessage | null {
     || v.editOutcome === 'conflict'
   ) {
     message.editOutcome = v.editOutcome;
+  }
+  if (Array.isArray(v.diff)) {
+    const diff: DiffLine[] = [];
+    for (const item of v.diff) {
+      if (typeof item !== 'object' || item === null) continue;
+      const d = item as Record<string, unknown>;
+      if ((d.kind === 'add' || d.kind === 'del' || d.kind === 'ctx') && typeof d.text === 'string') {
+        diff.push({ kind: d.kind, text: d.text });
+      }
+    }
+    if (diff.length > 0) message.diff = diff;
   }
   return message;
 }

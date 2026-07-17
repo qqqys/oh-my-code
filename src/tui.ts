@@ -10,6 +10,16 @@ import {
   type ApprovalRequest,
   type Risk,
 } from './approval.js';
+import {
+  blockBodyLines,
+  blockGlyph,
+  blockPlainText,
+  errorBlock,
+  messageBlocks,
+  progressBlock,
+  type Block,
+  type BlockKind,
+} from './blocks.js';
 import { runCommand } from './command.js';
 import { ComposerState, type CommandOutcome, type EditOutcome, type TranscriptMessage } from './composer.js';
 import { loadConfig, redact, type ModelConfig } from './config.js';
@@ -88,6 +98,14 @@ export interface StatusInfo {
   canRegenerate: boolean;
   canUndo: boolean;
   repository?: string;
+  statusMessage?: string;
+}
+
+// Transcript navigation state: which block is selected (or -1 to follow the
+// tail) and which block indices are collapsed.
+export interface TranscriptNav {
+  selectedBlock: number;
+  collapsed: ReadonlySet<number>;
 }
 
 export interface ApprovalCardInfo {
@@ -178,7 +196,7 @@ function usageLabel(usage: UsageInfo): string {
 }
 
 function actionHints(status: StatusInfo): string {
-  const hints: string[] = ['Enter send', '↑↓ history', 'Esc cancel', 'Ctrl+C exit'];
+  const hints: string[] = ['Enter send', '↑↓ history', 'Tab nav', 'Esc cancel', 'Ctrl+C exit'];
   if (status.canRetry) {
     hints.splice(2, 0, 'Ctrl+R retry');
   }
@@ -236,37 +254,73 @@ function renderEditCard(info: EditCardInfo): string[] {
   return lines;
 }
 
-// Each command outcome renders with a distinct label and color so denial,
-// timeout, cancellation, and non-zero exit are visually unambiguous.
-function commandHeader(outcome: CommandOutcome, args: string, truncated: boolean): string {
-  const truncTag = truncated ? ` ${fg.yellow('[truncated]')}` : '';
-  switch (outcome) {
-    case 'ok':
-      return `${fg.magenta(fg.bold('Command'))} ${fg.magenta(args)}${truncTag}`;
-    case 'non-zero':
-      return `${fg.red(fg.bold('Command failed'))} ${fg.red(args)}${truncTag}`;
-    case 'timeout':
-      return `${fg.yellow(fg.bold('Command timed out'))} ${fg.yellow(args)}`;
-    case 'cancelled':
-      return `${fg.dim(fg.bold('Command cancelled'))} ${fg.dim(args)}`;
-    case 'denied':
-      return `${fg.red(fg.bold('Command denied'))} ${fg.red(args)}`;
+// Each block kind has a stable color so the transcript reads as a consistent
+// visual hierarchy. The glyph and label come from the block model.
+function blockColor(kind: BlockKind): (s: string) => string {
+  switch (kind) {
+    case 'prompt':
+      return fg.cyan;
+    case 'reasoning':
+      return fg.magenta;
+    case 'markdown':
+      return fg.white;
+    case 'code':
+      return fg.cyan;
+    case 'diff':
+      return fg.green;
+    case 'tool':
+      return fg.magenta;
+    case 'warning':
+      return fg.yellow;
+    case 'progress':
+      return fg.green;
+    case 'error':
+      return fg.red;
   }
 }
 
-// Each edit outcome renders distinctly so applied, rejected, reverted, and
-// conflict states are visually unambiguous in the transcript.
-function editHeader(outcome: EditOutcome, args: string): string {
-  switch (outcome) {
-    case 'applied':
-      return `${fg.green(fg.bold('Edit applied'))} ${fg.green(args)}`;
-    case 'rejected':
-      return `${fg.red(fg.bold('Edit rejected'))} ${fg.red(args)}`;
-    case 'reverted':
-      return `${fg.blue(fg.bold('Edit reverted'))} ${fg.blue(args)}`;
-    case 'conflict':
-      return `${fg.yellow(fg.bold('Edit conflict'))} ${fg.yellow(args)}`;
+// Render one block to styled lines: a header (glyph + label, reverse-video when
+// selected) followed by an indented body, or a one-line collapse marker. The
+// output is readable with styling stripped, satisfying the plain-text fallback.
+function renderBlockLines(
+  block: Block,
+  transcriptWidth: number,
+  selected: boolean,
+  collapsed: boolean,
+): string[] {
+  const lines: string[] = [];
+  const color = blockColor(block.kind);
+  const truncTag = block.truncated === true ? ` ${fg.yellow('[truncated]')}` : '';
+  const langTag =
+    block.language !== undefined && block.language.length > 0 ? ` ${fg.dim('[' + block.language + ']')}` : '';
+  const marker = selected ? fg.reverse(' ') : ' ';
+  lines.push(`  ${marker}${color(fg.bold(blockGlyph(block.kind)))} ${color(block.header)}${langTag}${truncTag}`);
+
+  if (collapsed) {
+    const count = blockBodyLines(block).length;
+    lines.push(`     ${fg.dim('[' + count + ' line' + (count === 1 ? '' : 's') + ' collapsed]')}`);
+    lines.push('');
+    return lines;
   }
+
+  if (block.diff !== undefined && block.diff.length > 0) {
+    for (const line of block.diff) {
+      const prefix = line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : ' ';
+      const lineColor = line.kind === 'add' ? fg.green : line.kind === 'del' ? fg.red : fg.dim;
+      for (const wrapped of wrapText(`${prefix} ${line.text}`, transcriptWidth)) {
+        lines.push(`     ${lineColor(wrapped)}`);
+      }
+    }
+  } else {
+    for (const line of block.lines) {
+      const rendered = block.kind === 'code' ? `${fg.dim('│')} ${line}` : line;
+      for (const wrapped of wrapText(rendered, transcriptWidth)) {
+        lines.push(`     ${color(wrapped)}`);
+      }
+    }
+  }
+  lines.push('');
+  return lines;
 }
 
 export function renderScreen(
@@ -288,6 +342,7 @@ export function renderScreen(
   },
   approval: ApprovalCardInfo | null = null,
   edit: EditCardInfo | null = null,
+  nav: TranscriptNav = { selectedBlock: -1, collapsed: new Set() },
 ): string {
   const header: string[] = [];
 
@@ -313,50 +368,28 @@ export function renderScreen(
   header.push(`  ${fg.gray('─ Transcript ' + '─'.repeat(Math.max(0, width - 16)))}`);
   header.push('');
 
-  // Transcript body (scrolls when it overflows the available space)
+  // Transcript body: every message becomes one or more typed blocks (reasoning,
+  // Markdown, code, diff, tool, warning), plus a live progress block while
+  // streaming and an error block on failure. The body scrolls as a whole when it
+  // overflows, and can scroll to a selected block when navigating.
   const body: string[] = [];
+  const blockStart: number[] = [];
   const transcriptWidth = width - 6;
   if (messages.length === 0 && status.streamingText.length === 0 && status.error === null) {
     body.push(center(fg.dim('No messages yet.'), width));
     body.push('');
   } else {
+    const blocks: Block[] = [];
     for (const message of messages) {
-      if (message.role === 'tool') {
-        const args = message.toolArgs ? `(${message.toolArgs})` : '';
-        if (message.toolName === 'apply_edit') {
-          body.push(`  ${editHeader(message.editOutcome ?? 'applied', args)}`);
-        } else if (message.toolName === 'run_command') {
-          body.push(`  ${commandHeader(message.outcome ?? 'ok', args, message.truncated === true)}`);
-        } else {
-          const suffix = message.truncated ? ` ${fg.yellow('[truncated]')}` : '';
-          body.push(`  ${fg.magenta(fg.bold('Tool'))} ${fg.magenta((message.toolName ?? 'tool') + args)}${suffix}`);
-        }
-        for (const wrapped of wrapText(message.text, transcriptWidth)) {
-          body.push(`  ${fg.dim(wrapped)}`);
-        }
-        body.push('');
-        continue;
-      }
-      const label = message.role === 'user' ? fg.cyan(fg.bold('You')) : fg.green(fg.bold('Assistant'));
-      body.push(`  ${label}`);
-      for (const wrapped of wrapText(message.text, transcriptWidth)) {
-        body.push(`  ${wrapped}`);
-      }
-      body.push('');
+      blocks.push(...messageBlocks(message));
     }
-    if (status.streamingText.length > 0) {
-      body.push(`  ${fg.green(fg.bold('Assistant'))} ${fg.dim('(streaming…)')}`);
-      for (const wrapped of wrapText(status.streamingText, transcriptWidth)) {
-        body.push(`  ${wrapped}`);
-      }
-      body.push('');
-    }
-    if (status.error !== null) {
-      body.push(`  ${fg.red(fg.bold('Error'))}`);
-      for (const wrapped of wrapText(status.error, transcriptWidth)) {
-        body.push(`  ${fg.red(wrapped)}`);
-      }
-      body.push('');
+    if (status.streamingText.length > 0) blocks.push(progressBlock(status.streamingText));
+    if (status.error !== null) blocks.push(errorBlock(status.error));
+    let index = 0;
+    for (const block of blocks) {
+      blockStart.push(body.length);
+      body.push(...renderBlockLines(block, transcriptWidth, index === nav.selectedBlock, nav.collapsed.has(index)));
+      index += 1;
     }
   }
 
@@ -392,10 +425,12 @@ export function renderScreen(
       : edit !== null
         ? 'y accept  ·  n reject  ·  Esc cancel  ·  Ctrl+C exit'
         : actionHints(status);
-  const footer: string[] = [
-    center(usageLabel(status.usage), width),
-    center(fg.dim(footerHints), width),
-  ];
+  const footer: string[] = [];
+  if (status.statusMessage !== undefined && status.statusMessage.length > 0) {
+    footer.push(center(fg.green(status.statusMessage), width));
+  }
+  footer.push(center(usageLabel(status.usage), width));
+  footer.push(center(fg.dim(footerHints), width));
 
   const available = height - header.length - composer.length - footer.length;
   const lines: string[] = [...header];
@@ -406,8 +441,24 @@ export function renderScreen(
       .join('\r\n');
   }
   if (body.length > available) {
-    lines.push(center(fg.dim('...'), width));
-    lines.push(...body.slice(body.length - (available - 1)));
+    // Reserve one row for the "more above" marker, leaving the rest for content.
+    const contentRows = available - 1;
+    // When a block is selected, scroll so its header is visible; otherwise keep
+    // the newest content pinned to the bottom (follow-tail).
+    let start: number;
+    if (nav.selectedBlock >= 0 && nav.selectedBlock < blockStart.length) {
+      const wanted = blockStart[nav.selectedBlock] ?? 0;
+      start = Math.max(0, Math.min(wanted, body.length - contentRows));
+    } else {
+      start = Math.max(0, body.length - contentRows);
+    }
+    if (start > 0) {
+      lines.push(center(fg.dim('...'), width));
+      lines.push(...body.slice(start, start + contentRows));
+    } else {
+      // A selected block at the very top: use the full available height.
+      lines.push(...body.slice(0, available));
+    }
   } else {
     lines.push(...body);
   }
@@ -438,11 +489,14 @@ const KEY = {
   escape: 0x1b,
   backspace: 0x7f,
   delete: 0x08,
+  tab: 0x09,
   ctrlC: 0x03,
   ctrlD: 0x04,
+  ctrlE: 0x05,
   ctrlG: 0x07,
   ctrlR: 0x12,
   ctrlU: 0x15,
+  ctrlY: 0x19,
 } as const;
 
 function parseKey(data: Buffer): { type: string; value?: string } {
@@ -457,6 +511,9 @@ function parseKey(data: Buffer): { type: string; value?: string } {
     if (first === KEY.ctrlR) return { type: 'retry' };
     if (first === KEY.ctrlG) return { type: 'regenerate' };
     if (first === KEY.ctrlU) return { type: 'undo' };
+    if (first === KEY.tab) return { type: 'selectNext' };
+    if (first === KEY.ctrlE) return { type: 'toggleCollapse' };
+    if (first === KEY.ctrlY) return { type: 'copySelected' };
     if (first >= 0x20) return { type: 'char', value: data.toString('utf8') };
     return { type: 'unknown' };
   }
@@ -475,6 +532,7 @@ function parseKey(data: Buffer): { type: string; value?: string } {
       case '\x1b[3~': return { type: 'deleteForward' };
       case '\x1b[1~': return { type: 'home' };
       case '\x1b[4~': return { type: 'end' };
+      case '\x1b[Z': return { type: 'selectPrev' };
       default: return { type: 'unknown' };
     }
   }
@@ -526,6 +584,13 @@ export async function launchTui(options: TuiOptions): Promise<void> {
   let abortController: AbortController | null = null;
   let lastErrorRecoverable = false;
   const usage: UsageInfo = { turns: 0, promptTokens: 0, completionTokens: 0 };
+
+  // Transcript navigation: the selected block (-1 means "follow the tail") and
+  // the set of collapsed block indices. A transient status message (e.g. a copy
+  // confirmation) is shown in the footer until the next render clears it.
+  let selectedBlock = -1;
+  const collapsed = new Set<number>();
+  let statusMessage: string | null = null;
 
   // Durable session: every launch persists its transcript so an interrupted run
   // can be resumed. Resuming seeds the transcript and usage from disk and fails
@@ -606,8 +671,20 @@ export async function launchTui(options: TuiOptions): Promise<void> {
     return !streaming && pendingEdit === null && lastEdit !== null;
   }
 
+  // The exact block list the renderer draws, recomputed for keyboard navigation
+  // so selection, collapse, and copy operate on what the user sees.
+  function currentBlocks(): Block[] {
+    const blocks: Block[] = [];
+    for (const message of composer.messages) {
+      blocks.push(...messageBlocks(message));
+    }
+    if (streamingText.length > 0) blocks.push(progressBlock(streamingText));
+    if (errorMessage !== null) blocks.push(errorBlock(errorMessage));
+    return blocks;
+  }
+
   function buildStatus(): StatusInfo {
-    return {
+    const status: StatusInfo = {
       model: redact(config),
       connection,
       streamingText,
@@ -618,6 +695,8 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       canUndo: canUndo(),
       repository: repositoryLabel,
     };
+    if (statusMessage !== null) status.statusMessage = statusMessage;
+    return status;
   }
 
   if (!stdin.isTTY || !stdout.isTTY) {
@@ -648,6 +727,7 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       buildStatus(),
       approvalCard(),
       editCard(),
+      { selectedBlock, collapsed },
     );
     stdout.write(seq.home + screen);
   }
@@ -811,14 +891,21 @@ export async function launchTui(options: TuiOptions): Promise<void> {
     pending.resolve(decision);
   }
 
-  function pushEditMessage(outcome: EditOutcome, argsLabel: string, text: string): void {
-    composer.messages.push({
+  function pushEditMessage(
+    outcome: EditOutcome,
+    argsLabel: string,
+    text: string,
+    diff?: readonly DiffLine[],
+  ): void {
+    const message: TranscriptMessage = {
       role: 'tool',
       text,
       toolName: 'apply_edit',
       toolArgs: argsLabel,
       editOutcome: outcome,
-    });
+    };
+    if (diff !== undefined && diff.length > 0) message.diff = diff.map((line) => ({ ...line }));
+    composer.messages.push(message);
   }
 
   async function handleEdit(call: ToolCall): Promise<ToolResult> {
@@ -851,7 +938,7 @@ export async function launchTui(options: TuiOptions): Promise<void> {
     if (committed.status === 'applied') {
       lastEdit = committed.operation;
       const summary = `Applied edit to ${committed.operation.relativePath}.`;
-      pushEditMessage('applied', argsLabel, summary);
+      pushEditMessage('applied', argsLabel, summary, prepared.diff);
       return { name: 'apply_edit', output: summary, truncated: false, error: null };
     }
     pushEditMessage('conflict', argsLabel, committed.error);
@@ -873,6 +960,39 @@ export async function launchTui(options: TuiOptions): Promise<void> {
     }
     persist();
     render();
+  }
+
+  // Move selection to the next block, entering navigation mode from the tail.
+  function selectNextBlock(): void {
+    const count = currentBlocks().length;
+    if (count === 0) return;
+    selectedBlock = selectedBlock < 0 ? 0 : Math.min(selectedBlock + 1, count - 1);
+  }
+
+  // Move selection to the previous block; from the tail this jumps to the last.
+  function selectPrevBlock(): void {
+    const count = currentBlocks().length;
+    if (count === 0) return;
+    selectedBlock = selectedBlock < 0 ? count - 1 : Math.max(selectedBlock - 1, 0);
+  }
+
+  function toggleCollapseBlock(): void {
+    if (selectedBlock < 0) return;
+    if (collapsed.has(selectedBlock)) collapsed.delete(selectedBlock);
+    else collapsed.add(selectedBlock);
+  }
+
+  // Copy the selected block to the clipboard via OSC 52, with a visible
+  // confirmation. Falls back to a status message when nothing is selected.
+  function copySelectedBlock(): void {
+    const block = currentBlocks()[selectedBlock];
+    if (block === undefined) {
+      statusMessage = 'No block selected';
+      return;
+    }
+    const encoded = Buffer.from(blockPlainText(block), 'utf8').toString('base64');
+    stdout.write(`\x1b]52;c;${encoded}\x07`);
+    statusMessage = 'Copied block to clipboard';
   }
 
   async function streamResponse(): Promise<void> {
@@ -963,6 +1083,8 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       if (connection === 'connecting') {
         connection = 'done';
       }
+      // A finished turn returns focus to the live tail so new output is visible.
+      selectedBlock = -1;
       persist();
       render();
     }
@@ -982,6 +1104,9 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       if (last === undefined || last.role === 'user') break;
       composer.messages.pop();
     }
+    // Removing blocks shifts indices, so drop stale collapse/selection state.
+    collapsed.clear();
+    selectedBlock = -1;
     void streamResponse();
   }
 
@@ -1022,6 +1147,8 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       return;
     }
     const key = parseKey(data);
+    // A transient status toast (e.g. a copy confirmation) clears on the next key.
+    if (key.type !== 'copySelected') statusMessage = null;
     switch (key.type) {
       case 'exit':
         exit();
@@ -1056,6 +1183,8 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       case 'enter': {
         const submitted = composer.submit();
         if (submitted) {
+          // A new prompt returns to the live tail so the answer is visible.
+          selectedBlock = -1;
           // Persist the pending user message before streaming so an interrupted
           // turn can be resumed as a pending safe action.
           persist();
@@ -1063,6 +1192,18 @@ export async function launchTui(options: TuiOptions): Promise<void> {
         }
         break;
       }
+      case 'selectNext':
+        selectNextBlock();
+        break;
+      case 'selectPrev':
+        selectPrevBlock();
+        break;
+      case 'toggleCollapse':
+        toggleCollapseBlock();
+        break;
+      case 'copySelected':
+        copySelectedBlock();
+        break;
       case 'retry':
         retry();
         return;
