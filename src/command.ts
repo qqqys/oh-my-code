@@ -37,7 +37,23 @@ export function runCommand(options: RunCommandOptions): Promise<CommandOutcome> 
       cwd: options.cwd,
       env: options.env ?? process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
     });
+
+    // The shell may fork the command instead of exec'ing it, leaving a
+    // grandchild (e.g. `sleep`) that keeps the output pipe open after the shell
+    // dies, so `close` would not fire until that orphan exits. Spawn into a
+    // dedicated process group so signalling -pid terminates the whole tree.
+    const killTree = (signal: NodeJS.Signals): void => {
+      if (child.pid === undefined) {
+        return;
+      }
+      try {
+        process.kill(-child.pid, signal);
+      } catch {
+        child.kill(signal);
+      }
+    };
 
     let output = '';
     let bytes = 0;
@@ -69,20 +85,20 @@ export function runCommand(options: RunCommandOptions): Promise<CommandOutcome> 
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      killTree('SIGKILL');
     }, timeoutMs);
 
     const signal = options.signal;
     if (signal !== undefined) {
       if (signal.aborted) {
         cancelled = true;
-        child.kill('SIGKILL');
+        killTree('SIGKILL');
       } else {
         signal.addEventListener(
           'abort',
           () => {
             cancelled = true;
-            child.kill('SIGTERM');
+            killTree('SIGTERM');
           },
           { once: true },
         );
