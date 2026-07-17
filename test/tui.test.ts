@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { LOGO, renderScreen, type ApprovalCardInfo, type StatusInfo } from '../src/tui.js';
+import {
+  LOGO,
+  renderScreen,
+  type ApprovalCardInfo,
+  type EditCardInfo,
+  type StatusInfo,
+} from '../src/tui.js';
 
 function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
@@ -14,6 +20,7 @@ const defaultStatus: StatusInfo = {
   usage: { turns: 0, promptTokens: 0, completionTokens: 0 },
   canRetry: false,
   canRegenerate: false,
+  canUndo: false,
 };
 
 describe('TUI screen rendering', () => {
@@ -282,5 +289,72 @@ describe('approval boundary rendering', () => {
     ];
     const screen = stripAnsi(renderScreen(80, 40, '0.0.0', messages));
     expect(screen).toContain('truncated');
+  });
+});
+
+describe('edit boundary rendering', () => {
+  const edit: EditCardInfo = {
+    path: 'src/app.ts',
+    diff: [
+      { kind: 'del', text: 'const a = 1' },
+      { kind: 'add', text: 'const a = 2' },
+    ],
+    added: 1,
+    removed: 1,
+  };
+
+  it('renders the proposed-edit card with file, diff, and counts', () => {
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', [], '', 0, defaultStatus, null, edit));
+    expect(screen).toContain('Edit proposed');
+    expect(screen).toContain('src/app.ts');
+    expect(screen).toContain('- const a = 1');
+    expect(screen).toContain('+ const a = 2');
+    expect(screen).toContain('+1');
+    expect(screen).toContain('-1');
+  });
+
+  it('replaces the composer with edit actions while pending', () => {
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', [], '', 0, defaultStatus, null, edit));
+    expect(screen).toContain('y accept');
+    expect(screen).toContain('n reject');
+    expect(screen).not.toContain('Composer');
+  });
+
+  it('renders an applied edit distinctly', () => {
+    const messages = [
+      { role: 'tool' as const, text: 'Applied edit to src/app.ts.', toolName: 'apply_edit', toolArgs: 'path: src/app.ts', editOutcome: 'applied' as const },
+    ];
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', messages));
+    expect(screen).toContain('Edit applied');
+  });
+
+  it('renders a rejected edit distinctly', () => {
+    const messages = [
+      { role: 'tool' as const, text: 'Rejected by user; file unchanged.', toolName: 'apply_edit', toolArgs: 'path: src/app.ts', editOutcome: 'rejected' as const },
+    ];
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', messages));
+    expect(screen).toContain('Edit rejected');
+  });
+
+  it('renders a reverted edit distinctly', () => {
+    const messages = [
+      { role: 'tool' as const, text: 'Reverted edit to src/app.ts.', toolName: 'apply_edit', toolArgs: 'path: src/app.ts', editOutcome: 'reverted' as const },
+    ];
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', messages));
+    expect(screen).toContain('Edit reverted');
+  });
+
+  it('renders an edit conflict distinctly', () => {
+    const messages = [
+      { role: 'tool' as const, text: 'File changed; cannot apply edit.', toolName: 'apply_edit', toolArgs: 'path: src/app.ts', editOutcome: 'conflict' as const },
+    ];
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', messages));
+    expect(screen).toContain('Edit conflict');
+  });
+
+  it('shows the undo hint when an edit is revertable', () => {
+    const status: StatusInfo = { ...defaultStatus, canUndo: true };
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', [], '', 0, status));
+    expect(screen).toContain('Ctrl+U undo');
   });
 });

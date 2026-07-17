@@ -44,7 +44,7 @@ function relativePath(workspace: string, fullPath: string): string {
   return relative(resolve(workspace), fullPath);
 }
 
-function resolveSafePath(workspace: string, inputPath: string): string | null {
+export function resolveSafePath(workspace: string, inputPath: string): string | null {
   const normalizedWorkspace = resolve(workspace);
   const resolved = resolve(normalizedWorkspace, inputPath);
   if (resolved !== normalizedWorkspace && !resolved.startsWith(normalizedWorkspace + sep)) {
@@ -53,12 +53,12 @@ function resolveSafePath(workspace: string, inputPath: string): string | null {
   return resolved;
 }
 
-function isProtectedPath(fullPath: string, workspace: string): boolean {
+export function isProtectedPath(fullPath: string, workspace: string): boolean {
   const parts = relativePath(workspace, fullPath).split(sep);
   return parts.some((part) => PROTECTED_DIRS.has(part));
 }
 
-function isSecretPath(fullPath: string): boolean {
+export function isSecretPath(fullPath: string): boolean {
   const base = basename(fullPath);
   return SECRET_PATTERNS.some((pattern) => pattern.test(base));
 }

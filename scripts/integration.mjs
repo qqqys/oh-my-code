@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -8,6 +8,11 @@ const socket = join(temporaryDirectory, 'tmux.sock');
 const session = `oh-my-code-${process.pid}`;
 const cli = resolve('dist/cli.js');
 const nodeBin = process.execPath;
+
+// A throwaway file the edit turns act on. It lives in the workspace so the edit
+// tool accepts it, and is removed in the finally block so the tree stays clean.
+const fixturePath = resolve('omc-e2e-fixture.txt');
+const fixtureOriginal = 'alpha\nbeta\ngamma\n';
 
 function tmux(...args) {
   return spawnSync('tmux', ['-S', socket, ...args], {
@@ -48,10 +53,10 @@ function waitForContent(expected, timeoutMs = 10_000) {
 
 try {
   // Launch the TUI with the test provider. The pane is tall enough to hold the
-  // full three-turn transcript so the final capture shows every tool in action;
+  // full multi-turn transcript so the final capture shows every tool in action;
   // a shorter pane would scroll the earlier turns off-screen.
   const launchCmd = `env OMC_PROVIDER=test OMC_APPROVAL_TIMEOUT_MS=2000 ${JSON.stringify(nodeBin)} ${JSON.stringify(cli)}`;
-  const started = tmux('new-session', '-d', '-x', '120', '-y', '75', '-s', session, launchCmd);
+  const started = tmux('new-session', '-d', '-x', '120', '-y', '160', '-s', session, launchCmd);
   if (started.status !== 0) {
     throw new Error(started.stderr || 'Unable to start tmux integration session');
   }
@@ -118,11 +123,57 @@ try {
   waitForContent('Command timed out');
   waitForContent('ready');
 
-  // Verify usage reflects all six completed turns (footer stays pinned on-screen)
-  const finalScreen = waitForContent('turns: 6');
+  // === Turn 7: apply a scoped edit through the diff review boundary ===
+  writeFileSync(fixturePath, fixtureOriginal, 'utf8');
+  spawnSync('sleep', ['0.3']);
+  sendKeys('edit omc-e2e-fixture.txt :: beta :: BETA', 'Enter');
+  // The diff card blocks until a decision is recorded; nothing is written yet.
+  waitForContent('Edit proposed');
+  waitForContent('+ BETA');
+  sendKeys('y');
+  waitForContent('Edit applied');
+  waitForContent('ready');
+  if (!readFileSync(fixturePath, 'utf8').includes('BETA')) {
+    throw new Error('Accepted edit was not written to disk');
+  }
 
-  // The allow, deny, and timeout paths must each be visible in the transcript
-  for (const token of ['hello-allow', 'Command denied', 'Command timed out']) {
+  // === Turn 8: reject an edit; the file must stay untouched ===
+  spawnSync('sleep', ['0.3']);
+  sendKeys('edit omc-e2e-fixture.txt :: gamma :: GAMMA', 'Enter');
+  waitForContent('Edit proposed');
+  sendKeys('n');
+  waitForContent('Edit rejected');
+  waitForContent('ready');
+  const afterReject = readFileSync(fixturePath, 'utf8');
+  if (afterReject.includes('GAMMA')) {
+    throw new Error('Rejected edit must not modify the file');
+  }
+  if (!afterReject.includes('BETA')) {
+    throw new Error('Previously applied edit should still be present');
+  }
+
+  // === Revert: undo only the applied edit (Ctrl+U) ===
+  spawnSync('sleep', ['0.3']);
+  sendKeys('C-u');
+  waitForContent('Edit reverted');
+  waitForContent('ready');
+  // Revert restores the original content, leaving no trace of the applied edit.
+  if (readFileSync(fixturePath, 'utf8') !== fixtureOriginal) {
+    throw new Error('Revert did not restore the original file content');
+  }
+
+  // Verify usage reflects all eight completed turns (footer stays pinned on-screen)
+  const finalScreen = waitForContent('turns: 8');
+
+  // The command and edit paths must each be visible in the transcript.
+  for (const token of [
+    'hello-allow',
+    'Command denied',
+    'Command timed out',
+    'Edit applied',
+    'Edit rejected',
+    'Edit reverted',
+  ]) {
     if (!finalScreen.includes(token)) {
       throw new Error(`Expected ${token} in final transcript`);
     }
@@ -147,4 +198,5 @@ try {
 } finally {
   tmux('kill-server');
   rmSync(temporaryDirectory, { recursive: true, force: true });
+  rmSync(fixturePath, { force: true });
 }
