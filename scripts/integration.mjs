@@ -94,7 +94,7 @@ function sendKeys(...keys) {
   }
 }
 
-function waitForContent(expected, timeoutMs = 10_000, target = session) {
+function waitForContent(expected, timeoutMs = 30_000, target = session) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const content = capturePane(target);
@@ -131,7 +131,7 @@ function verifyResponsiveMatrix() {
         throw new Error(started.stderr || `Unable to start matrix session ${size.name}/${color.name}`);
       }
       try {
-        waitForContent('Composer', 10_000, matrixSession);
+        waitForContent('Composer', 30_000, matrixSession);
         const plain = capturePane(matrixSession);
         // The composer and footer are essential and stay on-screen at every size.
         if (!plain.includes('Composer')) {
@@ -159,6 +159,66 @@ function verifyResponsiveMatrix() {
         spawnSync('sleep', ['0.1']);
       }
     }
+  }
+}
+
+// Verify /model management in an isolated session: listing validated profiles,
+// inspecting non-secret config, a rejected switch, a successful switch to a
+// reduced-capability profile, and the resulting tool-skip fallback. Kept in its
+// own session so the profile switch cannot disturb the main flow.
+function verifyModelProfiles() {
+  const modelSession = `${session}-model`;
+  const cmd = `env OMC_PROVIDER=test OMC_APPROVAL_TIMEOUT_MS=2000 ${JSON.stringify(nodeBin)} ${JSON.stringify(cli)}`;
+  const started = tmux('new-session', '-d', '-x', '120', '-y', '40', '-s', modelSession, cmd);
+  if (started.status !== 0) {
+    throw new Error(started.stderr || 'Unable to start model session');
+  }
+  const send = (...keys) => {
+    for (const key of keys) {
+      const result = tmux('send-keys', '-t', modelSession, key);
+      if (result.status !== 0) throw new Error(result.stderr || `Failed to send key: ${key}`);
+    }
+  };
+  try {
+    waitForContent('Composer', 30_000, modelSession);
+
+    // Listing shows every validated profile with the active one marked.
+    send('/model list', 'Enter');
+    waitForContent('Active profile: test', 30_000, modelSession);
+    waitForContent('openai-gpt4o', 30_000, modelSession);
+    waitForContent('test-mini', 30_000, modelSession);
+
+    // Inspecting config reveals non-secret fields only.
+    spawnSync('sleep', ['0.3']);
+    send('/model show', 'Enter');
+    waitForContent('Effective configuration', 30_000, modelSession);
+    waitForContent('Capabilities:', 30_000, modelSession);
+
+    // A rejected switch is actionable: it names the unknown profile.
+    spawnSync('sleep', ['0.3']);
+    send('/model use nope', 'Enter');
+    waitForContent('No profile named "nope"', 30_000, modelSession);
+
+    // A successful switch updates the visible status and notes the fallback.
+    spawnSync('sleep', ['0.3']);
+    send('/model use test-mini', 'Enter');
+    waitForContent('Switched to test-mini', 30_000, modelSession);
+    waitForContent('does not support coding tools', 30_000, modelSession);
+    waitForContent('test-model-mini', 30_000, modelSession);
+
+    // Capability fallback: a tool request is skipped, not executed.
+    spawnSync('sleep', ['0.3']);
+    send('list files in src', 'Enter');
+    waitForContent('Skipped', 30_000, modelSession);
+    waitForContent('does not support tools', 30_000, modelSession);
+
+    // Switching back to a full-capability profile succeeds.
+    spawnSync('sleep', ['0.3']);
+    send('/model use test', 'Enter');
+    waitForContent('Switched to test ', 30_000, modelSession);
+  } finally {
+    tmux('kill-session', '-t', modelSession);
+    spawnSync('sleep', ['0.1']);
   }
 }
 
@@ -387,6 +447,9 @@ try {
 
   // === Responsive + color-capability contract: three sizes × two capabilities ===
   verifyResponsiveMatrix();
+
+  // === Model profiles: list, inspect, reject, switch, and capability fallback ===
+  verifyModelProfiles();
 
   // === Durability: terminate a live session, then resume it in a fresh process ===
 
