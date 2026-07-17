@@ -155,6 +155,18 @@ describe('TestProvider tool use', () => {
     }
   });
 
+  it('yields a run_command tool call for a run request', async () => {
+    const config = loadConfig({});
+    const provider = createProvider(config);
+    const gen = provider.stream([{ role: 'user', text: 'run echo hello' }]);
+    const first = await gen.next();
+    expect(first.value?.type).toBe('tool_call');
+    if (first.value?.type === 'tool_call') {
+      expect(first.value.call.name).toBe('run_command');
+      expect(first.value.call.args.command).toBe('echo hello');
+    }
+  });
+
   it('streams a summary response after receiving a tool result', async () => {
     const config = loadConfig({});
     const provider = createProvider(config);

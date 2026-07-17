@@ -1,9 +1,20 @@
+import { resolve, sep } from 'node:path';
 import process from 'node:process';
 
-import { ComposerState, type TranscriptMessage } from './composer.js';
+import {
+  ApprovalStore,
+  buildRequest,
+  defaultApprovalPath,
+  isAllowed,
+  type ApprovalOutcome,
+  type ApprovalRequest,
+  type Risk,
+} from './approval.js';
+import { runCommand } from './command.js';
+import { ComposerState, type CommandOutcome, type TranscriptMessage } from './composer.js';
 import { loadConfig, redact, type ModelConfig } from './config.js';
 import { createProvider, type ChatMessage, type Provider, type Usage } from './provider.js';
-import { executeTool, type ToolResult } from './tools.js';
+import { executeTool, type ToolCall, type ToolResult } from './tools.js';
 
 const ESC = '\x1b[';
 
@@ -56,6 +67,14 @@ export interface StatusInfo {
   usage: UsageInfo;
   canRetry: boolean;
   canRegenerate: boolean;
+}
+
+export interface ApprovalCardInfo {
+  command: string;
+  cwd: string;
+  risk: Risk;
+  scope: string;
+  countdown: number;
 }
 
 function stripAnsi(text: string): string {
@@ -141,6 +160,47 @@ function actionHints(status: StatusInfo): string {
   return hints.join('  ·  ');
 }
 
+function riskLabel(risk: Risk): string {
+  switch (risk) {
+    case 'high':
+      return fg.red(fg.bold('high'));
+    case 'medium':
+      return fg.yellow('medium');
+    case 'low':
+      return fg.green('low');
+  }
+}
+
+function renderApprovalCard(info: ApprovalCardInfo): string[] {
+  return [
+    `  ${fg.yellow(fg.bold('⚠ Approval required'))}`,
+    `  Command:   ${fg.bold(info.command)}`,
+    `  Directory: ${info.cwd}`,
+    `  Risk:      ${riskLabel(info.risk)}`,
+    `  Scope:     ${info.scope}`,
+    '',
+    `  ${fg.dim('auto-deny in ' + info.countdown + 's')}`,
+  ];
+}
+
+// Each command outcome renders with a distinct label and color so denial,
+// timeout, cancellation, and non-zero exit are visually unambiguous.
+function commandHeader(outcome: CommandOutcome, args: string, truncated: boolean): string {
+  const truncTag = truncated ? ` ${fg.yellow('[truncated]')}` : '';
+  switch (outcome) {
+    case 'ok':
+      return `${fg.magenta(fg.bold('Command'))} ${fg.magenta(args)}${truncTag}`;
+    case 'non-zero':
+      return `${fg.red(fg.bold('Command failed'))} ${fg.red(args)}${truncTag}`;
+    case 'timeout':
+      return `${fg.yellow(fg.bold('Command timed out'))} ${fg.yellow(args)}`;
+    case 'cancelled':
+      return `${fg.dim(fg.bold('Command cancelled'))} ${fg.dim(args)}`;
+    case 'denied':
+      return `${fg.red(fg.bold('Command denied'))} ${fg.red(args)}`;
+  }
+}
+
 export function renderScreen(
   width: number,
   height: number,
@@ -157,6 +217,7 @@ export function renderScreen(
     canRetry: false,
     canRegenerate: false,
   },
+  approval: ApprovalCardInfo | null = null,
 ): string {
   const header: string[] = [];
 
@@ -192,8 +253,12 @@ export function renderScreen(
     for (const message of messages) {
       if (message.role === 'tool') {
         const args = message.toolArgs ? `(${message.toolArgs})` : '';
-        const suffix = message.truncated ? ` ${fg.yellow('[truncated]')}` : '';
-        body.push(`  ${fg.magenta(fg.bold('Tool'))} ${fg.magenta((message.toolName ?? 'tool') + args)}${suffix}`);
+        if (message.toolName === 'run_command') {
+          body.push(`  ${commandHeader(message.outcome ?? 'ok', args, message.truncated === true)}`);
+        } else {
+          const suffix = message.truncated ? ` ${fg.yellow('[truncated]')}` : '';
+          body.push(`  ${fg.magenta(fg.bold('Tool'))} ${fg.magenta((message.toolName ?? 'tool') + args)}${suffix}`);
+        }
         for (const wrapped of wrapText(message.text, transcriptWidth)) {
           body.push(`  ${fg.dim(wrapped)}`);
         }
@@ -224,16 +289,30 @@ export function renderScreen(
   }
 
   // Composer + footer are pinned to the bottom; the transcript scrolls above.
-  const composer: string[] = [
-    '',
-    `  ${fg.gray('─ Composer ' + '─'.repeat(Math.max(0, width - 14)))}`,
-    '',
-    renderComposerLine(composerInput, composerCursor, '❯'),
-    '',
-  ];
+  // While an approval is pending, the approval card replaces the composer.
+  const composer: string[] =
+    approval !== null
+      ? [
+          '',
+          `  ${fg.gray('─ Approval ' + '─'.repeat(Math.max(0, width - 14)))}`,
+          '',
+          ...renderApprovalCard(approval),
+          '',
+        ]
+      : [
+          '',
+          `  ${fg.gray('─ Composer ' + '─'.repeat(Math.max(0, width - 14)))}`,
+          '',
+          renderComposerLine(composerInput, composerCursor, '❯'),
+          '',
+        ];
+  const footerHints =
+    approval !== null
+      ? 'y allow once  ·  a always  ·  n deny  ·  Esc cancel  ·  Ctrl+C exit'
+      : actionHints(status);
   const footer: string[] = [
     center(usageLabel(status.usage), width),
-    center(fg.dim(actionHints(status)), width),
+    center(fg.dim(footerHints), width),
   ];
 
   const available = height - header.length - composer.length - footer.length;
@@ -322,6 +401,21 @@ function parseKey(data: Buffer): { type: string; value?: string } {
   return { type: 'unknown' };
 }
 
+function parseTimeoutEnv(value: string | undefined, fallback: number): number {
+  const parsed = value !== undefined ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+// Resolve a user-supplied path inside the workspace, rejecting escapes.
+function resolveCwd(workspace: string, inputPath: string): string | null {
+  const root = resolve(workspace);
+  const resolved = resolve(root, inputPath);
+  if (resolved !== root && !resolved.startsWith(root + sep)) {
+    return null;
+  }
+  return resolved;
+}
+
 export async function launchTui(options: TuiOptions): Promise<void> {
   const { version } = options;
   const config = options.config ?? loadConfig();
@@ -338,6 +432,18 @@ export async function launchTui(options: TuiOptions): Promise<void> {
   let abortController: AbortController | null = null;
   let lastErrorRecoverable = false;
   const usage: UsageInfo = { turns: 0, promptTokens: 0, completionTokens: 0 };
+
+  const approvalStore = ApprovalStore.load(defaultApprovalPath(workspace));
+  const approvalTimeoutMs = parseTimeoutEnv(process.env['OMC_APPROVAL_TIMEOUT_MS'], 30_000);
+  const commandTimeoutMs = parseTimeoutEnv(process.env['OMC_COMMAND_TIMEOUT_MS'], 120_000);
+  let pendingApproval:
+    | {
+        request: ApprovalRequest;
+        resolve: (outcome: ApprovalOutcome) => void;
+        timer: ReturnType<typeof setInterval>;
+      }
+    | null = null;
+  let approvalCountdown = 0;
 
   function lastMessage(): TranscriptMessage | undefined {
     return composer.messages[composer.messages.length - 1];
@@ -389,6 +495,7 @@ export async function launchTui(options: TuiOptions): Promise<void> {
       composer.input,
       composer.cursorPosition,
       buildStatus(),
+      approvalCard(),
     );
     stdout.write(seq.home + screen);
   }
@@ -405,6 +512,123 @@ export async function launchTui(options: TuiOptions): Promise<void> {
   function applyUsage(delta: Usage): void {
     usage.promptTokens += delta.promptTokens;
     usage.completionTokens += delta.completionTokens;
+  }
+
+  function approvalCard(): ApprovalCardInfo | null {
+    if (pendingApproval === null) return null;
+    const { request } = pendingApproval;
+    return {
+      command: request.command,
+      cwd: request.cwd,
+      risk: request.risk,
+      scope: request.scope,
+      countdown: approvalCountdown,
+    };
+  }
+
+  // Pause for an approval decision. Resolves when the user chooses allow/deny,
+  // cancels, or the countdown expires. No command can start until this resolves.
+  function requestApproval(request: ApprovalRequest): Promise<ApprovalOutcome> {
+    return new Promise<ApprovalOutcome>((resolve) => {
+      approvalCountdown = Math.max(1, Math.ceil(approvalTimeoutMs / 1000));
+      const timer = setInterval(() => {
+        approvalCountdown -= 1;
+        if (approvalCountdown <= 0) {
+          if (pendingApproval !== null) {
+            clearInterval(pendingApproval.timer);
+            pendingApproval = null;
+          }
+          approvalCountdown = 0;
+          render();
+          resolve('timeout');
+        } else {
+          render();
+        }
+      }, 1000);
+      pendingApproval = { request, resolve, timer };
+      render();
+    });
+  }
+
+  function resolveApproval(outcome: ApprovalOutcome): void {
+    const pending = pendingApproval;
+    if (pending === null) return;
+    clearInterval(pending.timer);
+    pendingApproval = null;
+    approvalCountdown = 0;
+    render();
+    pending.resolve(outcome);
+  }
+
+  function pushCommandMessage(
+    call: ToolCall,
+    outcome: CommandOutcome,
+    text: string,
+    truncated: boolean,
+  ): void {
+    const argParts = Object.entries(call.args).map(([k, v]) => `${k}: ${v}`);
+    const message: TranscriptMessage = {
+      role: 'tool',
+      text,
+      toolName: 'run_command',
+      toolArgs: argParts.join(', '),
+      outcome,
+    };
+    if (truncated) message.truncated = true;
+    composer.messages.push(message);
+  }
+
+  async function handleCommand(call: ToolCall): Promise<ToolResult> {
+    const command = (call.args.command ?? '').trim();
+    const pathArg = call.args.path ?? '.';
+    if (command.length === 0) {
+      pushCommandMessage(call, 'denied', 'No command provided.', false);
+      return { name: 'run_command', output: '', truncated: false, error: 'No command provided.' };
+    }
+    const cwd = resolveCwd(workspace, pathArg);
+    if (cwd === null) {
+      const error = `Path escapes the workspace: ${pathArg}`;
+      pushCommandMessage(call, 'denied', error, false);
+      return { name: 'run_command', output: '', truncated: false, error };
+    }
+
+    const request = buildRequest(command, cwd);
+    const outcome = approvalStore.matches(request) ? 'allow-rule' : await requestApproval(request);
+    if (outcome === 'allow-rule' && !approvalStore.matches(request)) {
+      approvalStore.add({ command: request.command, cwd: request.cwd });
+    }
+
+    if (!isAllowed(outcome)) {
+      const label: CommandOutcome =
+        outcome === 'timeout' ? 'timeout' : outcome === 'cancel' ? 'cancelled' : 'denied';
+      const reason =
+        outcome === 'timeout'
+          ? 'Approval window expired; command not run.'
+          : outcome === 'cancel'
+            ? 'Cancelled before running.'
+            : 'Denied by user.';
+      pushCommandMessage(call, label, reason, false);
+      return { name: 'run_command', output: '', truncated: false, error: reason };
+    }
+
+    const signal = abortController?.signal;
+    const exec = await runCommand({
+      command: request.command,
+      cwd: request.cwd,
+      timeoutMs: commandTimeoutMs,
+      ...(signal !== undefined ? { signal } : {}),
+    });
+    const label: CommandOutcome =
+      exec.status === 'ok'
+        ? 'ok'
+        : exec.status === 'non-zero'
+          ? 'non-zero'
+          : exec.status === 'timeout'
+            ? 'timeout'
+            : 'cancelled';
+    pushCommandMessage(call, label, exec.output, exec.truncated);
+    const error = exec.status === 'ok' ? null : `exit ${exec.exitCode ?? exec.status}`;
+    return { name: 'run_command', output: exec.output, truncated: exec.truncated, error };
   }
 
   async function streamResponse(): Promise<void> {
@@ -443,16 +667,20 @@ export async function launchTui(options: TuiOptions): Promise<void> {
             break;
           case 'tool_call': {
             connection = 'streaming';
-            const result = executeTool(value.call, workspace);
-            const argParts = Object.entries(value.call.args).map(([k, v]) => `${k}: ${v}`);
-            composer.messages.push({
-              role: 'tool',
-              text: result.error ?? result.output,
-              toolName: value.call.name,
-              toolArgs: argParts.join(', '),
-              truncated: result.truncated,
-            });
-            toolInput = result;
+            if (value.call.name === 'run_command') {
+              toolInput = await handleCommand(value.call);
+            } else {
+              const result = executeTool(value.call, workspace);
+              const argParts = Object.entries(value.call.args).map(([k, v]) => `${k}: ${v}`);
+              composer.messages.push({
+                role: 'tool',
+                text: result.error ?? result.output,
+                toolName: value.call.name,
+                toolArgs: argParts.join(', '),
+                truncated: result.truncated,
+              });
+              toolInput = result;
+            }
             render();
             break;
           }
@@ -511,6 +739,24 @@ export async function launchTui(options: TuiOptions): Promise<void> {
   }
 
   function onKeypress(data: Buffer): void {
+    if (pendingApproval !== null) {
+      const approvalKey = parseKey(data);
+      if (approvalKey.type === 'exit') {
+        exit();
+        return;
+      }
+      if (approvalKey.type === 'escape') {
+        resolveApproval('cancel');
+        return;
+      }
+      if (approvalKey.type === 'char' && approvalKey.value !== undefined) {
+        const choice = approvalKey.value.toLowerCase();
+        if (choice === 'y') return resolveApproval('allow-once');
+        if (choice === 'a') return resolveApproval('allow-rule');
+        if (choice === 'n') return resolveApproval('deny');
+      }
+      return;
+    }
     const key = parseKey(data);
     switch (key.type) {
       case 'exit':

@@ -71,6 +71,12 @@ function extractFileName(text: string): string | null {
   return match?.[1] ?? null;
 }
 
+function extractCommand(text: string): string | null {
+  const match = text.match(/\b(?:run|execute|shell)\b\s+(.+)$/i);
+  const command = match?.[1]?.trim();
+  return command !== undefined && command.length > 0 ? command : null;
+}
+
 function detectToolIntent(text: string): ToolCall | null {
   const lower = text.toLowerCase();
   if (/\blist\b/.test(lower)) {
@@ -87,6 +93,12 @@ function detectToolIntent(text: string): ToolCall | null {
         path: extractAfter(text, 'in') ?? '.',
       },
     };
+  }
+  if (/\brun\b/.test(lower) || /\bexecute\b/.test(lower) || /\bshell\b/.test(lower)) {
+    const command = extractCommand(text);
+    if (command !== null) {
+      return { name: 'run_command', args: { command } };
+    }
   }
   return null;
 }
@@ -124,10 +136,11 @@ class TestProvider implements Provider {
         yield { type: 'error', error: 'cancelled', recoverable: false };
         return;
       }
+      const verb = intent.name === 'run_command' ? 'ran' : 'inspected the repository with';
       const response =
         result?.error !== undefined && result.error !== null
           ? `The ${intent.name} tool could not complete: ${result.error}`
-          : `I inspected the repository with ${intent.name}. The results are shown above.`;
+          : `I ${verb} ${intent.name}. The results are shown above.`;
       yield* this.streamText(response, messages, signal);
       return;
     }

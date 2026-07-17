@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { LOGO, renderScreen, type StatusInfo } from '../src/tui.js';
+import { LOGO, renderScreen, type ApprovalCardInfo, type StatusInfo } from '../src/tui.js';
 
 function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
@@ -204,5 +204,83 @@ describe('TUI screen rendering', () => {
   it('renders Unicode composer input', () => {
     const screen = stripAnsi(renderScreen(80, 30, '0.0.0', [], '日本語', 2));
     expect(screen).toContain('日本語');
+  });
+});
+
+describe('approval boundary rendering', () => {
+  const approval: ApprovalCardInfo = {
+    command: 'rm -rf tmp',
+    cwd: '/repo',
+    risk: 'high',
+    scope: 'run this exact command in /repo',
+    countdown: 5,
+  };
+
+  it('renders the approval card with command, directory, risk, and scope', () => {
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', [], '', 0, defaultStatus, approval));
+    expect(screen).toContain('Approval required');
+    expect(screen).toContain('rm -rf tmp');
+    expect(screen).toContain('/repo');
+    expect(screen).toContain('Risk:');
+    expect(screen).toContain('high');
+    expect(screen).toContain('run this exact command in /repo');
+    expect(screen).toContain('auto-deny in 5s');
+  });
+
+  it('replaces the composer with approval actions while pending', () => {
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', [], '', 0, defaultStatus, approval));
+    expect(screen).toContain('y allow once');
+    expect(screen).toContain('n deny');
+    expect(screen).not.toContain('Composer');
+  });
+
+  it('renders a successful command outcome', () => {
+    const messages = [
+      { role: 'tool' as const, text: 'hello', toolName: 'run_command', toolArgs: 'command: echo hello', outcome: 'ok' as const },
+    ];
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', messages));
+    expect(screen).toContain('Command');
+    expect(screen).toContain('hello');
+  });
+
+  it('renders a denied command distinctly', () => {
+    const messages = [
+      { role: 'tool' as const, text: 'Denied by user.', toolName: 'run_command', toolArgs: 'command: echo hi', outcome: 'denied' as const },
+    ];
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', messages));
+    expect(screen).toContain('Command denied');
+    expect(screen).toContain('Denied by user.');
+  });
+
+  it('renders a timed-out approval distinctly', () => {
+    const messages = [
+      { role: 'tool' as const, text: 'Approval window expired; command not run.', toolName: 'run_command', toolArgs: 'command: echo hi', outcome: 'timeout' as const },
+    ];
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', messages));
+    expect(screen).toContain('Command timed out');
+  });
+
+  it('renders a non-zero exit distinctly', () => {
+    const messages = [
+      { role: 'tool' as const, text: 'boom', toolName: 'run_command', toolArgs: 'command: false', outcome: 'non-zero' as const },
+    ];
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', messages));
+    expect(screen).toContain('Command failed');
+  });
+
+  it('renders a cancelled command distinctly', () => {
+    const messages = [
+      { role: 'tool' as const, text: 'Cancelled before running.', toolName: 'run_command', toolArgs: 'command: sleep 9', outcome: 'cancelled' as const },
+    ];
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', messages));
+    expect(screen).toContain('Command cancelled');
+  });
+
+  it('flags truncated command output', () => {
+    const messages = [
+      { role: 'tool' as const, text: 'partial', toolName: 'run_command', toolArgs: 'command: seq 1 1000', outcome: 'ok' as const, truncated: true },
+    ];
+    const screen = stripAnsi(renderScreen(80, 40, '0.0.0', messages));
+    expect(screen).toContain('truncated');
   });
 });

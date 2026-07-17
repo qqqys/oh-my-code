@@ -3,6 +3,7 @@ dist/
 coverage/
 .local/
 .qwen/
+.omc/
 .env
 .env.*
 !.env.example
